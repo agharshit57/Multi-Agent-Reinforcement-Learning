@@ -11,7 +11,8 @@ Modify hyperparameters here instead of changing them throughout the code.
 
 NUM_AGENTS = 5
 
-EPISODE_LENGTH = 100          # Must match EnterpriseScenarioGenerator(steps=100)
+EPISODE_LENGTH = 100
+# Must match EnterpriseScenarioGenerator(steps=100)
 
 MISSION_PHASES = 3
 
@@ -34,7 +35,7 @@ LARGE_ACTION_DIM = 242
 # and every action distribution to 242 actions.
 #
 # Invalid actions are masked before sampling.
-#
+
 OBS_DIM = LARGE_OBS_DIM
 ACTION_DIM = LARGE_ACTION_DIM
 
@@ -44,16 +45,20 @@ ACTION_DIM = LARGE_ACTION_DIM
 # ==========================================================
 TOTAL_EPISODES = 1000                             
 
-
 ROLLOUT_STEPS = 512
-UPDATE_EPOCHS = 5 #(was 10)
+
+UPDATE_EPOCHS = 5
+# Was 10
+
 MINIBATCH_SIZE = 256
+
+# General learning rate
+# Kept because mappo.py imports this value.
 LEARNING_RATE = 3e-4
 
-#( separate learning rates)
+# Separate learning rates
 ACTOR_LEARNING_RATE = 1e-4
 CRITIC_LEARNING_RATE = 5e-5
-
 
 GAMMA = 0.99
 GAE_LAMBDA = 0.95
@@ -62,21 +67,34 @@ VALUE_LOSS_COEF = 0.5
 ENTROPY_COEF = 0.01
 MAX_GRAD_NORM = 0.5
 
+# Optional value clipping
+VALUE_CLIP = True
+# Was False
+
+# Standard MAPPO practice
+NORMALIZE_ADVANTAGES = True
+
 
 # ==========================================================
 # Neural Network
 # ==========================================================
 
 HIDDEN_DIM = 256
-NUM_HIDDEN_LAYERS = 5 # (change back to 2 later!!!!)
+
+NUM_HIDDEN_LAYERS = 5
+# Change back to 2 later
+
 ACTIVATION = "relu"
+
 DEVICE = "cuda"
+
 
 # ==========================================================
 # Logging
 # ==========================================================
 
 PRINT_EVERY = 10
+
 SAVE_EVERY = 500
 
 CHECKPOINT_DIR = "checkpoints/aam_test1"
@@ -104,15 +122,17 @@ NORMALIZE_ADVANTAGES = True # Standard MAPPO practice
 # ==========================================================
 # Curriculum Learning
 # ==========================================================
+
 USE_VALUE_NORM = True
+
 CURRICULUM_ENABLED = True
 
 CURRICULUM_STAGES = [
     (0, "RandomSelectRedAgent"),
     (4000, "FiniteStateRedAgent"),
 ]
-CURRICULUM_SWITCH_EPISODE = 200
 
+CURRICULUM_SWITCH_EPISODE = 200
 
 CURRICULUM_SCHEDULE = [
     (100, 0.10),   # 80% Random, 20% Finite
@@ -123,9 +143,10 @@ CURRICULUM_SCHEDULE = [
 ]
 
 
+# ==========================================================
+# Attention
+# ==========================================================
 
-
-# attention :-
 EMBED_DIM = 256
-NUM_HEADS = 4
 
+NUM_HEADS = 4
