@@ -1,3 +1,4 @@
+from __future__ import annotations
 from CybORG import CybORG
 from CybORG.Agents import BaseAgent
 
@@ -6,7 +7,6 @@ from CybORG.Agents.Wrappers.EnterpriseMAE import EnterpriseMAE
 
 # Import your custom agents here.
 from dummy_agent import DummyAgent
-from __future__ import annotations
 
 class Submission:
 
