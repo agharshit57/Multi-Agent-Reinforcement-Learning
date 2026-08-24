@@ -97,8 +97,8 @@ PRINT_EVERY = 10
 
 SAVE_EVERY = 500
 
-CHECKPOINT_DIR = "checkpoints/aam_test1"
-LOG_DIR = "evaluation/aam_test1"
+CHECKPOINT_DIR = "checkpoints/AAM_AFTER_FIXES"
+LOG_DIR = "evaluation/AAM_AFTER_FIXES"
 
 
 # ==========================================================
@@ -106,16 +106,7 @@ LOG_DIR = "evaluation/aam_test1"
 # ==========================================================
 
 SEED = 42
-# PPO Training
-UPDATE_EPOCHS = 5
-MINIBATCH_SIZE = 256
-VALUE_LOSS_COEF = 0.5
-ENTROPY_COEF = 0.01
-PPO_CLIP = 0.2
-MAX_GRAD_NORM = 0.5
-# Add these
-VALUE_CLIP = True #(was false)          # Optional value clipping
-NORMALIZE_ADVANTAGES = True # Standard MAPPO practice
+
 
 
 
@@ -135,9 +126,9 @@ CURRICULUM_STAGES = [
 CURRICULUM_SWITCH_EPISODE = 200
 
 CURRICULUM_SCHEDULE = [
-    (100, 0.10),   # 80% Random, 20% Finite
+    (100, 0.10),   # 90% Random, 10% Finite
     (300, 0.40),   # 60% Random, 40% Finite
-    (700, 0.80),   # 40% Random, 60% Finite
+    (700, 0.80),   # 20% Random, 80% Finite
     (1000, 1.00),   # 100% Finite
     (10000, 1.00),  # 100% Finite
 ]

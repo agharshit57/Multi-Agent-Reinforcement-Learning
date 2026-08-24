@@ -886,12 +886,19 @@ class SharedActor(nn.Module):
 
         local_hidden = self._get_local_hidden(observation)
 
-        (
-            field_ids,
-            message_log_probs,
-            message_entropies,
-            outgoing_message,
-        ) = self.generate_communication(local_hidden)
+        # Only sample/encode an outgoing message when the caller
+        # actually wants it (return_communication=True). Plain policy
+        # forward calls -- e.g. actor_forward() during PPO's
+        # evaluate_actions() -- previously generated and discarded a
+        # full message every call, roughly doubling forward cost for
+        # no effect on `logits`.
+        if return_communication:
+            (
+                field_ids,
+                message_log_probs,
+                message_entropies,
+                outgoing_message,
+            ) = self.generate_communication(local_hidden)
 
         communication_context = self._apply_received_communication(
             local_hidden=local_hidden,
@@ -910,9 +917,11 @@ class SharedActor(nn.Module):
 
         if squeeze_output:
             logits = logits.squeeze(0)
-            outgoing_message = outgoing_message.squeeze(0)
 
         if return_communication:
+            if squeeze_output:
+                outgoing_message = outgoing_message.squeeze(0)
+
             return (
                 logits,
                 outgoing_message,
