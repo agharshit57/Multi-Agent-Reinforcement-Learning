@@ -21,12 +21,15 @@ Shared Actor:
     Hierarchical Graph Message Passing
         host      <-> own subnet
         host      <-> other hosts, same subnet
-        subnet    <-> subnet            (fully connected unless
-                                          SUBNET_EDGES supplied)
+        subnet    <-> subnet            (real CC4 topology, resolved
+                                          per-sample from the
+                                          observation -- see
+                                          "Subnet graph construction"
+                                          below)
         subnet    <-> mission
             |
             v
-    Multi-Head Attention (over ALL graph nodes)
+    Multi-Head Attention (over ALL graph nodes, padding masked out)
             |
             v
     Pool back down to [mission, subnet_0 .. subnet_N] tokens
@@ -89,8 +92,7 @@ uniform adjacency is functionally close to a no-op sitting in front
 of MultiheadAttention: attention already learns adaptive pairwise
 weights over that same fully-connected node set, so a fixed uniform
 message-passing layer on top of it adds parameters without adding
-real inductive bias. That's the most likely reason a GNN+attention
-version built that way doesn't beat plain ANN+attention.
+real inductive bias.
 
 The observation already contains host-level signal
 (`process_alerts`, `connection_alerts`, each length MAX_HOSTS,
@@ -103,13 +105,45 @@ gives the GNN actual structure to propagate over before attention
 re-summarizes it -- the two modules are now doing different jobs
 instead of the same job twice.
 
-If you know the real CC4 subnet-to-subnet connectivity for this
-agent's zone, pass it in via `subnet_edges` in SharedActor.__init__
-(list of (i, j) index pairs into the NUM_HQ_SUBNETS subnets) instead
-of relying on the fully-connected fallback -- that is the single
-highest-value upgrade left on the table here, since inter-subnet
-adjacency is fixed and known at training time even though it isn't
-exposed in the flat observation itself.
+Subnet graph construction
+--------------------------
+Every agent's observation has exactly NUM_HQ_SUBNETS (=3) subnet
+slots, but only some of those slots hold a real subnet:
+
+    Agent 4 (HQ)     -> 3 real slots: admin, office, public_access
+    Agents 0-3       -> 1 real slot (their assigned subnet),
+                         the other 2 slots are padding
+
+BlueFlatWrapper writes a NUM_SUBNETS-length one-hot into the start
+of every subnet slot's context block identifying *which* real
+subnet (if any) occupies that slot; an all-zero one-hot means the
+slot is padding. Because this identity is only knowable from the
+observation itself -- and because the shared policy sees agents
+with different real/padding layouts in the same batch -- the
+subnet<->subnet edges (and which nodes are masked out as padding)
+are resolved **per sample, at forward time**, in
+`SharedActor._build_batch_adjacency`, rather than being baked into
+a single fixed adjacency buffer at __init__ time. The physical CC4
+subnet-to-subnet topology (which slots are allowed to connect to
+which *if both are real*) is still fixed and is precomputed once
+into `real_topology`; only the resolution of "which real subnet is
+in slot i for this sample" and "is slot i even real" is dynamic.
+
+Padding is kept harmless in two places:
+  1. GNN adjacency: every edge touching a padding node (mission<->
+     padding, padding<->padding subnet edges, host<->padding) is
+     zeroed before row-normalization, so padding nodes neither send
+     nor receive messages.
+  2. Attention: padding nodes are passed to `nn.MultiheadAttention`
+     via `key_padding_mask` so they can't be attended to either.
+
+If you want to override the physical topology (e.g. for an ablation
+or a different scenario), pass `subnet_edges` to `SharedActor` /
+`MAPPOModel` as a list of (i, j) index pairs into
+`SUBNET_NAME_ORDER` -- the same interface as before. `None` now
+means "no subnet-subnet edges at all" (fully isolated subnets)
+rather than the old fully-connected fallback, since a fully-connected
+default silently misrepresents the real topology.
 
 IMPORTANT
 ---------
@@ -199,7 +233,9 @@ COMMUNICATION_ATTENTION_DIM = EMBED_DIM
 #
 # The first three chunks are context shared by the whole subnet.
 # The last two chunks are genuinely per-host and are what we turn
-# into host graph nodes below.
+# into host graph nodes below. The subnet one-hot is also what
+# tells us, per sample, which real subnet (if any) occupies this
+# slot -- see "Subnet graph construction" in the module docstring.
 # ==========================================================
 
 MISSION_DIM = 1
@@ -247,10 +283,65 @@ assert _EXPECTED_OBS_DIM == OBS_DIM, (
 )
 
 
-# Optional: real subnet-to-subnet adjacency for this agent's zone,
-# as (i, j) index pairs into range(NUM_HQ_SUBNETS). Leave as None to
-# fall back to a fully-connected subnet graph.
-SUBNET_EDGES: Optional[List[Tuple[int, int]]] = None
+# ==========================================================
+# Canonical subnet identity table
+# ==========================================================
+#
+# BlueFlatWrapper builds each subnet slot's one-hot from
+# `sorted(state.subnet_name_to_cidr.items())` -- alphabetical order
+# over the 9 CC4 subnet names. This is the same order used by
+# Marl/gnn/wrapper/globals.py::ROUTERS (minus the "_router" suffix),
+# which is where these names are sourced from. If the scenario's
+# subnet names ever change, update this list to match.
+SUBNET_NAME_ORDER: List[str] = [
+    "admin_network_subnet",
+    "contractor_network_subnet",
+    "internet_subnet",
+    "office_network_subnet",
+    "operational_zone_a_subnet",
+    "operational_zone_b_subnet",
+    "public_access_zone_subnet",
+    "restricted_zone_a_subnet",
+    "restricted_zone_b_subnet",
+]
+
+assert len(SUBNET_NAME_ORDER) == NUM_SUBNETS, (
+    f"SUBNET_NAME_ORDER has {len(SUBNET_NAME_ORDER)} entries but "
+    f"NUM_SUBNETS is {NUM_SUBNETS} -- BlueFlatWrapper's subnet "
+    "one-hot layout has changed; update this table to match."
+)
+
+_SUBNET_NAME_TO_IDX = {name: i for i, name in enumerate(SUBNET_NAME_ORDER)}
+
+# Real, physical CC4 subnet-to-subnet topology (independent of which
+# agent is observing). Cross-checked against both BlueFlatWrapper's
+# `_build_comms_policy_network` and Marl/gnn/wrapper/globals.py's
+# `ACCESSABLE_OFFLINE`:
+#
+#          Public_Access
+#           /         \
+#          /           \
+#       Admin -------- Office
+#
+#   Restricted_A <-> Operational_A
+#   Restricted_B <-> Operational_B
+REAL_SUBNET_TOPOLOGY_EDGES: List[Tuple[str, str]] = [
+    ("restricted_zone_a_subnet", "operational_zone_a_subnet"),
+    ("restricted_zone_b_subnet", "operational_zone_b_subnet"),
+    ("public_access_zone_subnet", "admin_network_subnet"),
+    ("public_access_zone_subnet", "office_network_subnet"),
+    ("admin_network_subnet", "office_network_subnet"),
+]
+
+# Default `subnet_edges` for SharedActor / MAPPOModel: the real
+# topology above, expressed as index pairs into SUBNET_NAME_ORDER
+# (i.e. into the universe of 9 real subnets -- NOT into an agent's
+# 3 padded observation slots, which are resolved per-sample from
+# the observation itself; see `SharedActor._build_batch_adjacency`).
+SUBNET_EDGES: List[Tuple[int, int]] = [
+    (_SUBNET_NAME_TO_IDX[a], _SUBNET_NAME_TO_IDX[b])
+    for a, b in REAL_SUBNET_TOPOLOGY_EDGES
+]
 
 
 # ==========================================================
@@ -285,29 +376,36 @@ def build_mlp(
 # Hierarchical adjacency
 # ==========================================================
 
-def _build_hierarchical_adjacency(
+def _build_structural_adjacency(
     num_subnets: int,
     max_hosts: int,
-    subnet_edges: Optional[List[Tuple[int, int]]] = None,
 ) -> torch.Tensor:
     """
-    Build a fixed, row-normalized adjacency matrix over:
+    Build the FIXED (data-independent) part of the hierarchical
+    graph over:
 
         node 0                        = mission
-        node 1 .. num_subnets         = subnets
-        node (1+num_subnets) ..       = hosts, grouped by subnet
+        node 1 .. num_subnets         = subnet slots
+        node (1+num_subnets) ..       = hosts, grouped by slot
 
     Edges:
 
-        mission <-> every subnet
-        subnet  <-> subnet             (subnet_edges, or fully
-                                         connected if not given)
-        subnet  <-> its own hosts
-        host    <-> other hosts in the SAME subnet only
+        mission <-> every subnet slot
+        subnet slot  <-> its own hosts
+        host    <-> other hosts in the SAME slot only
 
-    Hosts do NOT connect across subnets and do NOT connect
-    directly to mission -- that's the actual topological prior
-    this graph encodes, as opposed to a flat fully-connected blob.
+    Subnet-slot <-> subnet-slot edges are intentionally NOT built
+    here. Which slots may be connected depends on which real
+    subnets occupy them for a given observation (and whether a slot
+    is even real, or padding) -- that is agent- and sample-
+    dependent, so it's resolved per-sample at forward time in
+    `SharedActor._build_batch_adjacency` instead of being baked
+    into this static buffer.
+
+    Not row-normalized: normalization happens per-sample, after
+    the dynamic subnet-subnet edges are added and padding nodes are
+    masked out, so that a padding node's zeroed row doesn't get
+    divided by a nonzero degree computed before masking.
     """
 
     num_nodes = 1 + num_subnets + num_subnets * max_hosts
@@ -321,27 +419,13 @@ def _build_hierarchical_adjacency(
     def host_idx(subnet_i: int, host_j: int) -> int:
         return host_start + subnet_i * max_hosts + host_j
 
-    # mission <-> subnets
+    # mission <-> subnet slots
     for s in range(num_subnets):
         si = subnet_start + s
         adjacency[mission_idx, si] = 1.0
         adjacency[si, mission_idx] = 1.0
 
-    # subnet <-> subnet
-    if subnet_edges is not None:
-        for (i, j) in subnet_edges:
-            si, sj = subnet_start + i, subnet_start + j
-            adjacency[si, sj] = 1.0
-            adjacency[sj, si] = 1.0
-    else:
-        for s1 in range(num_subnets):
-            for s2 in range(num_subnets):
-                if s1 != s2:
-                    si1 = subnet_start + s1
-                    si2 = subnet_start + s2
-                    adjacency[si1, si2] = 1.0
-
-    # subnet <-> own hosts, host <-> host (same subnet)
+    # subnet slot <-> own hosts, host <-> host (same slot)
     for s in range(num_subnets):
         si = subnet_start + s
         for h in range(max_hosts):
@@ -353,11 +437,34 @@ def _build_hierarchical_adjacency(
                     hi2 = host_idx(s, h2)
                     adjacency[hi, hi2] = 1.0
 
-    # mean aggregation
-    degree = adjacency.sum(dim=-1, keepdim=True).clamp_min(1.0)
-    adjacency = adjacency / degree
-
     return adjacency
+
+
+def _build_real_topology_matrix(
+    subnet_edges: Optional[List[Tuple[int, int]]],
+    num_subnets: int,
+) -> torch.Tensor:
+    """
+    Build the [num_subnets, num_subnets] adjacency over the
+    universe of *real* CC4 subnets (indexed by SUBNET_NAME_ORDER),
+    independent of any agent's observation layout.
+
+    `subnet_edges=None` means no subnet-subnet edges at all
+    (fully isolated subnets) -- NOT a fully-connected fallback.
+    A fully-connected default would silently misrepresent the real
+    topology, which is exactly the bug this module fixes.
+    """
+
+    matrix = torch.zeros(num_subnets, num_subnets)
+
+    if subnet_edges is None:
+        return matrix
+
+    for i, j in subnet_edges:
+        matrix[i, j] = 1.0
+        matrix[j, i] = 1.0
+
+    return matrix
 
 
 # ==========================================================
@@ -366,16 +473,19 @@ def _build_hierarchical_adjacency(
 
 class GraphMessagePassing(nn.Module):
     """
-    Gated graph message-passing layer over a fixed adjacency.
+    Gated graph message-passing layer over a (possibly per-sample)
+    adjacency.
 
-    Input:  [B, N, D]
+    Input:  x          [B, N, D]
+            adjacency   [B, N, N] or [N, N] -- already row-
+                        normalized, and with any padding-node edges
+                        already zeroed out by the caller.
     Output: [B, N, D]
     """
 
     def __init__(
         self,
         dim: int,
-        adjacency: torch.Tensor,
     ):
         super().__init__()
 
@@ -391,11 +501,16 @@ class GraphMessagePassing(nn.Module):
 
         self.norm = nn.LayerNorm(dim)
 
-        self.register_buffer("adjacency", adjacency)
+    def forward(
+        self,
+        x: torch.Tensor,
+        adjacency: torch.Tensor,
+    ) -> torch.Tensor:
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-
-        neighbor_info = torch.matmul(self.adjacency, x)
+        # torch.matmul broadcasts a [N, N] adjacency across the
+        # batch, or applies a [B, N, N] per-sample adjacency
+        # directly -- both are supported.
+        neighbor_info = torch.matmul(adjacency, x)
 
         self_info = self.self_linear(x)
         neighbor_info = self.neighbor_linear(neighbor_info)
@@ -461,16 +576,33 @@ class SharedActor(nn.Module):
 
         # ------------------------------------------------------
         # GNN
+        #
+        # `structural_adjacency` is the fixed mission/subnet/host
+        # skeleton (no subnet-subnet edges). `real_topology` is the
+        # fixed physical CC4 subnet graph over the universe of 9
+        # real subnets. Neither depends on which agent produced a
+        # given observation -- they're combined with per-sample
+        # subnet identity/padding info at forward time in
+        # `_build_batch_adjacency`.
         # ------------------------------------------------------
 
         if self.use_host_graph:
-            adjacency = _build_hierarchical_adjacency(
-                num_subnets=NUM_HQ_SUBNETS,
-                max_hosts=MAX_HOSTS,
-                subnet_edges=subnet_edges,
+            self.register_buffer(
+                "structural_adjacency",
+                _build_structural_adjacency(
+                    num_subnets=NUM_HQ_SUBNETS,
+                    max_hosts=MAX_HOSTS,
+                ),
             )
-            self.gnn1 = GraphMessagePassing(EMBED_DIM, adjacency.clone())
-            self.gnn2 = GraphMessagePassing(EMBED_DIM, adjacency.clone())
+            self.register_buffer(
+                "real_topology",
+                _build_real_topology_matrix(
+                    subnet_edges=subnet_edges,
+                    num_subnets=NUM_SUBNETS,
+                ),
+            )
+            self.gnn1 = GraphMessagePassing(EMBED_DIM)
+            self.gnn2 = GraphMessagePassing(EMBED_DIM)
         else:
             self.gnn1 = None
             self.gnn2 = None
@@ -614,6 +746,123 @@ class SharedActor(nn.Module):
         return mission, subnets, messages
 
     # ======================================================
+    # Per-sample subnet graph construction
+    # ======================================================
+
+    def _build_batch_adjacency(
+        self,
+        subnet_one_hot: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Combine the fixed mission/subnet/host skeleton with
+        per-sample subnet-subnet edges drawn from the real CC4
+        topology, then isolate padding subnet slots (and their host
+        blocks) so they neither send nor receive GNN messages.
+
+        Args:
+            subnet_one_hot: [B, NUM_HQ_SUBNETS, NUM_SUBNETS] -- the
+                "subnet one-hot" sub-vector BlueFlatWrapper writes
+                at the start of every subnet slot's context block.
+                A slot whose one-hot sums to 0 is padding (no real
+                subnet occupies it in this observation).
+
+        Returns:
+            adjacency:   [B, N, N] row-normalized adjacency, ready
+                         for GraphMessagePassing.
+            node_active: [B, N] bool -- True for real (non-padding)
+                         nodes. Mission is always True. Also usable
+                         directly as the inverse of an
+                         `nn.MultiheadAttention` key_padding_mask.
+        """
+
+        batch_size, num_slots, _ = subnet_one_hot.shape
+        device = subnet_one_hot.device
+
+        # Which slots hold a real subnet this step, and which real
+        # subnet (by index into SUBNET_NAME_ORDER) each active slot
+        # holds. For padding slots slot_id is meaningless (masked
+        # out below), so any value is fine there.
+        slot_active = subnet_one_hot.sum(dim=-1) > 0.5           # [B, S]
+        slot_id = subnet_one_hot.argmax(dim=-1)                  # [B, S]
+
+        # Gather the real-world subnet-subnet topology restricted
+        # to whichever real subnets occupy these slots this step:
+        #   subnet_subnet[b, i, j] = real_topology[slot_id[b,i], slot_id[b,j]]
+        topology = self.real_topology.to(device)
+        rows = topology[slot_id]                                  # [B, S, NUM_SUBNETS]
+        gather_index = slot_id.unsqueeze(1).expand(-1, num_slots, -1)
+        subnet_subnet = torch.gather(rows, dim=2, index=gather_index)
+
+        # An edge only exists if BOTH slots are real for this sample.
+        slot_pair_active = slot_active.unsqueeze(2) & slot_active.unsqueeze(1)
+        subnet_subnet = subnet_subnet * slot_pair_active.to(subnet_subnet.dtype)
+
+        subnet_start = 1
+        subnet_end = subnet_start + num_slots
+        host_start = subnet_end
+
+        adjacency = self.structural_adjacency.to(device)
+        adjacency = adjacency.unsqueeze(0).expand(batch_size, -1, -1).clone()
+        adjacency[:, subnet_start:subnet_end, subnet_start:subnet_end] = subnet_subnet
+
+        # Full-graph active-node mask: mission is always real; a
+        # subnet slot and its entire host block share the same
+        # active/padding status.
+        node_active = torch.ones(
+            batch_size, adjacency.shape[1], dtype=torch.bool, device=device
+        )
+        node_active[:, subnet_start:subnet_end] = slot_active
+        for s in range(num_slots):
+            h0 = host_start + s * MAX_HOSTS
+            h1 = h0 + MAX_HOSTS
+            node_active[:, h0:h1] = slot_active[:, s : s + 1]
+
+        # Zero every edge touching a padding node -- no mission<->
+        # padding, no padding<->padding subnet edges, no host<->
+        # padding, in either direction.
+        edge_active = node_active.unsqueeze(2) & node_active.unsqueeze(1)
+        adjacency = adjacency * edge_active.to(adjacency.dtype)
+
+        degree = adjacency.sum(dim=-1, keepdim=True).clamp_min(1.0)
+        adjacency = adjacency / degree
+
+        return adjacency, node_active
+
+    # ======================================================
+    # Padding isolation
+    # ======================================================
+
+    @staticmethod
+    def _mask_inactive_nodes(
+        x: torch.Tensor,
+        node_active: torch.Tensor,
+    ) -> torch.Tensor:
+        """
+        Zero out every padding node's token in-place-equivalent
+        (returns a new tensor).
+
+        `key_padding_mask` on `nn.MultiheadAttention` only stops
+        padding nodes from being attended to as keys/values -- it
+        does NOT stop them from acting as queries. A padding node's
+        query still attends over the real nodes' values, so its
+        post-attention token absorbs real information. Since padding
+        subnet tokens sit inside `entity_tokens` (pooled straight
+        into `local_projection`), that leakage would otherwise reach
+        the policy/communication path. Explicitly re-zeroing padding
+        nodes after every stage that could introduce such leakage
+        (GNN layers, and the attention + FFN block) guarantees they
+        stay inert regardless of what happens inside those stages.
+
+        Args:
+            x:           [B, N, D]
+            node_active: [B, N] bool -- True for real (non-padding)
+                         nodes, as returned by
+                         `_build_batch_adjacency`.
+        """
+
+        return x * node_active.unsqueeze(-1).to(dtype=x.dtype)
+
+    # ======================================================
     # Entity encoding
     # ======================================================
 
@@ -628,6 +877,11 @@ class SharedActor(nn.Module):
         )
 
         batch_size = observation.shape[0]
+
+        # Every branch below needs to know which of the
+        # NUM_HQ_SUBNETS slots are real vs. padding for this batch.
+        subnet_one_hot = subnets[..., :NUM_SUBNETS]
+        slot_active = subnet_one_hot.sum(dim=-1) > 0.5
 
         # --------------------------------------------------
         # Mission node
@@ -649,16 +903,34 @@ class SharedActor(nn.Module):
         )
 
         if not self.use_host_graph:
+            node_active = torch.cat(
+                [
+                    torch.ones(
+                        batch_size, MISSION_DIM, dtype=torch.bool,
+                        device=slot_active.device,
+                    ),
+                    slot_active,
+                ],
+                dim=1,
+            )
+
             tokens = torch.cat([mission_tok, subnet_tok], dim=1)
             tokens = tokens + self.pos_embed
 
             attn_out, attention_weights = self.attention(
-                tokens, tokens, tokens
+                tokens, tokens, tokens,
+                key_padding_mask=~node_active,
             )
             self.last_attention = attention_weights.detach()
 
             x = self.norm1(tokens + attn_out)
             x = self.norm2(x + self.ffn(x))
+
+            # See `_mask_inactive_nodes`: key_padding_mask alone
+            # doesn't stop a padding query from absorbing real
+            # values, so explicitly zero padding tokens before they
+            # reach local_projection.
+            x = self._mask_inactive_nodes(x, node_active)
 
             return x
 
@@ -698,28 +970,54 @@ class SharedActor(nn.Module):
         tokens = tokens + self.pos_embed
 
         # --------------------------------------------------
-        # Hierarchical GNN message passing
+        # Per-sample subnet graph: real topology + padding isolation
         # --------------------------------------------------
 
-        tokens = self.gnn1(tokens)
-        tokens = F.gelu(tokens)
+        adjacency, node_active = self._build_batch_adjacency(subnet_one_hot)
 
-        tokens = self.gnn2(tokens)
+        # --------------------------------------------------
+        # Hierarchical GNN message passing
+        #
+        # The masked adjacency already stops padding nodes from
+        # receiving real neighbor messages, but each layer's
+        # self_linear(x) term still runs on whatever a padding
+        # node's own token happens to be (embedding-layer bias,
+        # etc). Re-zeroing after every layer guarantees padding
+        # nodes carry no information forward regardless of that,
+        # rather than relying solely on the adjacency mask.
+        # --------------------------------------------------
+
+        tokens = self.gnn1(tokens, adjacency)
         tokens = F.gelu(tokens)
+        tokens = self._mask_inactive_nodes(tokens, node_active)
+
+        tokens = self.gnn2(tokens, adjacency)
+        tokens = F.gelu(tokens)
+        tokens = self._mask_inactive_nodes(tokens, node_active)
 
         self.last_gnn_output = tokens.detach()
 
         # --------------------------------------------------
-        # Attention over the full graph
+        # Attention over the full graph (padding nodes excluded)
         # --------------------------------------------------
 
         attn_out, attention_weights = self.attention(
-            tokens, tokens, tokens
+            tokens, tokens, tokens,
+            key_padding_mask=~node_active,
         )
         self.last_attention = attention_weights.detach()
 
         x = self.norm1(tokens + attn_out)
         x = self.norm2(x + self.ffn(x))
+
+        # `key_padding_mask` only stops padding nodes from being
+        # attended to as keys/values -- a padding node's own query
+        # still attends over the real nodes' values, so its
+        # post-attention/FFN token can absorb real information.
+        # Since entity_tokens (below) is pooled straight into
+        # local_projection, re-zero padding nodes here so that
+        # leak can't reach the policy/communication path.
+        x = self._mask_inactive_nodes(x, node_active)
 
         # --------------------------------------------------
         # Pool back down to mission + subnet tokens. Host-level
