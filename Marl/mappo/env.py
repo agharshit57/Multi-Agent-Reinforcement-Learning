@@ -9,17 +9,52 @@ The rest of the project only imports CC4Env.
 Ground truth
 ------------
 
-get_ground_truth() is a heuristic, not a perfect oracle: for a given
-sender agent, it checks whether any red-agent session exists on a host
-within that agent's assigned subnets, per the CURRENT true state. This
-is enough to give DynamicTrust a real (non-null) correctness signal --
-"did this agent report a compromise when one actually existed in its
-zone" -- but it does not yet distinguish SCAN vs COMPROMISE vs
-LATERAL_MOVEMENT, or identify a specific target host. Refine using
-state.hosts[h].events (old_process_creation / process_creation,
-old_network_connections / network_connections -- see
-BlueFlatWrapper._get_procesess / _get_connections for the exact
-pattern) if you need finer-grained event_type ground truth later.
+get_ground_truth(sender_id) reports what is ACTUALLY true in the sender's
+zone, RIGHT NOW, as pure per-host facts. It is deliberately independent
+of any agent message: it does not receive, inspect, or resolve a claimed
+target, and it never substitutes one host for another. Grading a message
+against this truth is entirely the MessageEvaluator's job.
+
+    CybORG true state
+          |
+          v
+        env.py  ->  PURE GROUND TRUTH  ->  MessageEvaluator
+                                               ^
+                                               |
+                                     agent's StructuredMessage
+
+This separation is what fixes the old wrong-target rescue: if an agent
+claims COMPROMISE on Host_3 while Host_7 (not Host_3) is the compromised
+one, env.py simply reports the true state of every relevant host in the
+zone. Host_3 is absent from target_status, so the evaluator sees the
+claim was about an uninvolved host and scores it wrong -- the claim is
+NOT silently re-pointed at Host_7.
+
+It distinguishes three tiers per host, using signals verified against
+CybORG's own action source (see _compute_host_snapshot()):
+
+    COMPROMISE          an active Red session exists on the host --
+                         the one signal that cannot come from benign
+                         Green activity.
+
+    SUSPICIOUS_ACTIVITY a process/connection event exists but no Red
+                         session is confirmed. NOT Red-exclusive --
+                         GreenLocalWork/GreenAccessService write into
+                         the same event fields as Red's exploit/
+                         portscan actions -- so this is a "something
+                         happened here" signal, not proof of Red
+                         involvement.
+
+    NONE                neither.
+
+Still a heuristic, not a perfect oracle: it cannot yet distinguish
+SCAN from LATERAL_MOVEMENT from PRIVILEGE_ESCALATION within the
+SUSPICIOUS_ACTIVITY/COMPROMISE tiers (that would need per-action-type
+event tagging CybORG doesn't currently expose at the Host.events
+level). Ground truth here is host-level only; TargetType.SUBNET claims
+have no host-vocabulary equivalent, so the evaluator leaves them
+ungraded (get_num_targets() is host-only -- see schema.py/decoder.py
+for the open protocol gap).
 """
 
 from CybORG import CybORG
@@ -84,12 +119,12 @@ class CC4Env:
         self.agent_names = list(self.env.agents)
 
         # ------------------------------------------------------------
-        # Ground-truth compromise snapshot -- see step() / reset() and
+        # Ground-truth state snapshot -- see step() / reset() and
         # get_ground_truth() below for why this has to be captured
         # BEFORE each env.step() call rather than read live.
         # ------------------------------------------------------------
 
-        self._pre_step_compromised_hosts = self._compute_compromised_hosts()
+        self._pre_step_host_snapshot = self._compute_host_snapshot()
 
     ############################################################
 
@@ -100,7 +135,7 @@ class CC4Env:
         # Fresh episode -- re-snapshot from the post-reset state so
         # the first messages generated this episode are graded
         # against the state they actually saw.
-        self._pre_step_compromised_hosts = self._compute_compromised_hosts()
+        self._pre_step_host_snapshot = self._compute_host_snapshot()
 
         return observations, info
 
@@ -124,7 +159,7 @@ class CC4Env:
         # were written.
         # ------------------------------------------------------------
 
-        self._pre_step_compromised_hosts = self._compute_compromised_hosts()
+        self._pre_step_host_snapshot = self._compute_host_snapshot()
 
         observations, rewards, terminated, truncated, info = \
             self.env.step(actions, messages)
@@ -297,217 +332,271 @@ class CC4Env:
 
         return zone_flags
 
-    ############################################################
-    # Ground truth for MessageEvaluator / DynamicTrust
-    ############################################################
-
-    def _compute_compromised_hosts(self):
+    def get_blocked_zone_pairs(self):
         """
-        Return the set of hostnames that CURRENTLY have an active Red
-        session, per the live CybORG true state at the moment this is
-        called.
+        Return the set of (from_subnet, to_subnet) subnet-name pairs
+        CURRENTLY blocked, exactly as CybORG's own BlockTrafficZone /
+        AllowTrafficZone bookkeeping represents them:
 
-        This is the expensive part of get_ground_truth()'s old
-        per-(sender, receiver) loop, factored out so it runs ONCE per
-        step() (from a single, correctly-timed snapshot) instead of
-        being recomputed from scratch for every one of the up to
-        NUM_AGENTS*(NUM_AGENTS-1) sender/receiver pairs graded per
-        step -- a nice side effect of fixing the timing bug below.
+            state.blocks[to_subnet] -> list of from_subnet names
+            currently blocked from reaching to_subnet.
+
+        Deliberately does NOT normalize case here. BlueFixedActionWrapper
+        lowercases `from_subnet` at action-construction time but NOT
+        `to_subnet` (see _populate_action_space: `srcname = srcname.lower()`
+        is applied only to the source side), and ControlTraffic.py's
+        BlockTrafficZone/AllowTrafficZone.execute_control_traffic() key
+        state.blocks with self.to_subnet/self.from_subnet exactly as
+        constructed. Returning the raw strings here means callers can
+        compare directly against action.from_subnet/action.to_subnet
+        with no risk of a case-mismatch silently breaking the lookup.
+
+        Like get_host_alert_flags/get_zone_alert_flags, this is NOT
+        privileged red-team ground truth -- every agent's own
+        observation already carries a `blocked_subnets` flag for its
+        own zone (BlueFlatWrapper.observation_change); this reads the
+        same underlying fact directly, for every subnet pair, instead
+        of re-deriving a single agent's slice of it from a padded
+        observation vector.
         """
 
         state = self.cyborg.environment_controller.state
 
-        compromised = set()
+        blocks = getattr(state, "blocks", {})
+
+        pairs = set()
+
+        for to_subnet, from_subnets in blocks.items():
+
+            for from_subnet in from_subnets:
+
+                pairs.add((from_subnet, to_subnet))
+
+        return pairs
+
+    ############################################################
+    # Ground truth for MessageEvaluator / DynamicTrust
+    ############################################################
+
+    def _compute_host_snapshot(self):
+        """
+        Return {hostname: {"compromised", "has_process_event",
+        "has_connection_event"}} for every host, from the live CybORG
+        true state at the moment this is called.
+
+        compromised:
+            An active Red session exists on the host. Verified against
+            CybORG source as the one signal here that CANNOT come from
+            benign Green activity -- the authoritative check.
+
+        has_process_event / has_connection_event:
+            state.hosts[h].events shows a process_creation /
+            network_connections entry this window (same fields
+            get_host_alert_flags() reads). NOT Red-exclusive --
+            GreenLocalWork.py and GreenAccessService.py write into
+            these same fields, same as Red's ExploitAction/Portscan --
+            so on their own these mean "something happened here", not
+            "Red did this". Only used to distinguish SUSPICIOUS_ACTIVITY
+            from NONE in get_ground_truth() when `compromised` is
+            False; never used to claim COMPROMISE by themselves.
+        """
+
+        state = self.cyborg.environment_controller.state
+
+        snapshot = {}
 
         for hostname, host in state.hosts.items():
 
             sessions = getattr(host, "sessions", {})
 
+            compromised = False
+
             for owner, session_list in sessions.items():
 
                 if "red" in str(owner).lower() and session_list:
-                    compromised.add(hostname)
+                    compromised = True
                     break
 
-        return compromised
+            events = host.events
 
-    def get_ground_truth(
-            self,
-            sender_id,
-            receiver_id,
-            message,
-            previous_info,
-            current_info,
-        ):
-            """
-            Training-side ground truth for one sender's structured message.
-
-            The ground truth is derived from the CybORG true state as of
-            the START of the step() call that delivered this message --
-            i.e. the same state the sender's observation (and therefore
-            the message itself) was actually generated from. This is
-            captured by _compute_compromised_hosts() in step()/reset()
-            BEFORE the environment advances, specifically so a message
-            can't be graded against consequences (new compromises, red
-            lateral movement, etc.) that happened on the SAME step,
-            after the message was already written.
-
-            For the sender's assigned subnets, this function identifies
-            compromised hosts containing an active Red session.
-
-            Returns information compatible with MessageEvaluator:
-
-                event_type
-                target_type
-                target_id
-                threat_level
-                status
-                compromised
-                suspicious
-
-            target_id uses the deterministic sorted host list:
-
-                sorted(state.hosts.keys())
-
-            This MUST remain consistent with the target-ID mapping used by
-            the communication encoder/decoder.
-            """
-
-            # ------------------------------------------------------------
-            # Resolve sender
-            # ------------------------------------------------------------
-
-            agent_names = sorted(self.possible_agents)
-
-            if not (0 <= sender_id < len(agent_names)):
-                return None
-
-            sender_name = agent_names[sender_id]
-
-            # ------------------------------------------------------------
-            # Access true CybORG state
-            # ------------------------------------------------------------
-
-            state = self.cyborg.environment_controller.state
-
-            agent_meta = state.scenario.agents.get(
-                sender_name
+            has_process_event = bool(
+                events.old_process_creation or events.process_creation
             )
 
-            if agent_meta is None:
-                return None
-
-            # ------------------------------------------------------------
-            # Sender's assigned subnets
-            # ------------------------------------------------------------
-
-            sender_subnets = {
-                str(subnet).lower()
-                for subnet in agent_meta.allowed_subnets
-            }
-
-            # ------------------------------------------------------------
-            # Deterministic host -> target_id mapping
-            #
-            # IMPORTANT:
-            # This mapping must match the mapping used by the
-            # communication module.
-            # ------------------------------------------------------------
-
-            hostnames = sorted(
-                state.hosts.keys()
+            has_connection_event = bool(
+                events.old_network_connections or events.network_connections
             )
 
-            host_to_id = {
-                hostname: index
-                for index, hostname in enumerate(hostnames)
+            snapshot[hostname] = {
+                "compromised": compromised,
+                "has_process_event": has_process_event,
+                "has_connection_event": has_connection_event,
             }
 
-            # ------------------------------------------------------------
-            # Find compromised hosts in sender's zone
-            #
-            # Uses the snapshot captured BEFORE this step's env.step()
-            # ran (see step()/_compute_compromised_hosts()) -- NOT a
-            # fresh live query -- so this message is graded against the
-            # state it was actually generated from, not whatever the
-            # true state has since become.
-            # ------------------------------------------------------------
+        return snapshot
 
-            compromised_hosts = []
+    def get_ground_truth(self, sender_id):
+        """
+        Pure, message-independent ground truth for the sender's zone.
 
-            for hostname in self._pre_step_compromised_hosts:
+        This reports what is ACTUALLY true about every relevant host in
+        the sender's security zone, RIGHT NOW. It does NOT receive,
+        inspect, or resolve any agent message, target, or receiver -- it
+        answers only "what is true in the sender's zone?". Grading a
+        specific claim against this truth is entirely MessageEvaluator's
+        job (see communication/evaluator.py).
 
-                subnet = state.hostname_subnet_map.get(
-                    hostname
-                )
+        This is the fix for the old wrong-target rescue: because we never
+        see the claimed target here, we can never silently re-point a
+        claim at a different, genuinely-compromised host. We simply
+        report the truth for the whole zone; a claim about an uninvolved
+        host will find that host absent from `target_status` and be
+        scored wrong by the evaluator.
 
-                if subnet is None:
-                    continue
+        State source
+        ------------
+        Uses the snapshot captured BEFORE this step's env.step() ran
+        (see step() / _compute_host_snapshot()), so a message generated
+        from the start-of-step observation is graded against the state it
+        was actually generated from -- not the mutated post-step state.
 
-                if str(subnet).lower() not in sender_subnets:
-                    continue
+        Per-host tiers
+        --------------
+            active Red session
+                -> EventType.COMPROMISE / ThreatLevel.HIGH
+                   / HostStatus.COMPROMISED
 
-                compromised_hosts.append(
-                    hostname
-                )
+            process/connection event but no confirmed Red session
+                -> EventType.SUSPICIOUS_ACTIVITY / ThreatLevel.MEDIUM
+                   / HostStatus.SUSPICIOUS
 
-            # ------------------------------------------------------------
-            # No compromise in sender's zone
-            # ------------------------------------------------------------
+            neither
+                -> absent from target_status (i.e. NONE / normal)
 
-            if not compromised_hosts:
+        Returns
+        -------
+        None
+            If the sender id / agent cannot be resolved. (No trust update
+            is performed in that case -- see train.py.)
 
-                return {
-                    "event_type": EventType.NONE,
+        Otherwise a dict:
 
-                    "target_type": TargetType.NONE,
+            {
+                "target_status": {
+                    target_id (int): {
+                        "event_type":   EventType,
+                        "threat_level": ThreatLevel,
+                        "status":       HostStatus,
+                    },
+                    ...   # one entry per RELEVANT host in the zone
+                },
+                "zone_quiet": bool,   # True iff no relevant host exists
+            }
 
-                    "target_id": 0,
+        target_id uses the deterministic sorted host list:
 
-                    "threat_level": ThreatLevel.LOW,
+            sorted(state.hosts.keys())
 
-                    "status": HostStatus.NORMAL,
+        This MUST remain consistent with the target-ID mapping used by
+        the communication encoder/decoder and by get_num_targets().
+        """
 
-                    "compromised": False,
+        # ------------------------------------------------------------
+        # Resolve sender (message-independent)
+        # ------------------------------------------------------------
 
-                    "suspicious": False,
+        agent_names = sorted(self.possible_agents)
 
-                    "useful": False,
+        if not (0 <= sender_id < len(agent_names)):
+            return None
+
+        sender_name = agent_names[sender_id]
+
+        state = self.cyborg.environment_controller.state
+
+        agent_meta = state.scenario.agents.get(sender_name)
+
+        if agent_meta is None:
+            return None
+
+        # ------------------------------------------------------------
+        # Sender's assigned subnets
+        # ------------------------------------------------------------
+
+        sender_subnets = {
+            str(subnet).lower()
+            for subnet in agent_meta.allowed_subnets
+        }
+
+        # ------------------------------------------------------------
+        # Deterministic host <-> target_id mapping.
+        #
+        # IMPORTANT: must match the mapping used by the communication
+        # module and get_num_targets().
+        # ------------------------------------------------------------
+
+        hostnames = sorted(state.hosts.keys())
+
+        host_to_id = {
+            hostname: index
+            for index, hostname in enumerate(hostnames)
+        }
+
+        # ------------------------------------------------------------
+        # Every host in the sender's zone, graded from the PRE-STEP
+        # snapshot (not a fresh live query). Hosts with no relevant
+        # activity are simply left out of target_status.
+        # ------------------------------------------------------------
+
+        target_status = {}
+
+        for hostname in sorted(self._pre_step_host_snapshot):
+
+            subnet = str(
+                state.hostname_subnet_map.get(hostname, "")
+            ).lower()
+
+            if subnet not in sender_subnets:
+                continue
+
+            target_id = host_to_id.get(hostname)
+
+            if target_id is None:
+                # In the snapshot but not in the current host list, so it
+                # cannot be addressed by any message target_id -- skip.
+                continue
+
+            snapshot = self._pre_step_host_snapshot[hostname]
+
+            if snapshot["compromised"]:
+
+                target_status[target_id] = {
+                    "event_type": EventType.COMPROMISE,
+                    "threat_level": ThreatLevel.HIGH,
+                    "status": HostStatus.COMPROMISED,
                 }
 
-            # ------------------------------------------------------------
-            # Compromise exists
-            #
-            # For now we use the first deterministic compromised host.
-            #
-            # Later we can upgrade this to evaluate multiple targets.
-            # ------------------------------------------------------------
+            elif (
+                snapshot["has_process_event"]
+                or snapshot["has_connection_event"]
+            ):
 
-            compromised_hosts.sort()
+                # Suspicious tier: an event exists but no Red session is
+                # confirmed. Not Red-exclusive (see
+                # _compute_host_snapshot()), so reported as
+                # SUSPICIOUS_ACTIVITY, never COMPROMISE.
+                target_status[target_id] = {
+                    "event_type": EventType.SUSPICIOUS_ACTIVITY,
+                    "threat_level": ThreatLevel.MEDIUM,
+                    "status": HostStatus.SUSPICIOUS,
+                }
 
-            target_hostname = compromised_hosts[0]
+            # else: NONE tier -- host is absent from target_status.
 
-            target_id = host_to_id[
-                target_hostname
-            ]
-
-            return {
-                "event_type": EventType.COMPROMISE,
-
-                "target_type": TargetType.HOST,
-
-                "target_id": target_id,
-
-                "threat_level": ThreatLevel.HIGH,
-
-                "status": HostStatus.COMPROMISED,
-
-                "compromised": True,
-
-                "suspicious": False,
-
-                "useful": True,
-            }
+        return {
+            "target_status": target_status,
+            "zone_quiet": len(target_status) == 0,
+        }
 
 
 from ray.tune.registry import register_env

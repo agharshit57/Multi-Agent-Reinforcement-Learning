@@ -384,9 +384,14 @@ class MAPPO:
 
         if return_decoded:
 
+            # Built from the SAME field_ids used above for
+            # communication_vector -- NOT a separate decoder.decode()
+            # call, which is a different forward pass and isn't
+            # guaranteed to agree with what was actually sampled/sent.
             structured_message = (
-                self.actor.communication.decoder.decode(
-                    local_hidden
+                self.communication.structured_message_from_ids(
+                    field_ids,
+                    index=0,
                 )
             )
 
@@ -396,6 +401,7 @@ class MAPPO:
 
             return (
                 communication_vector,
+                structured_message,
                 field_ids,
                 message_log_probs,
                 message_entropies,
@@ -504,24 +510,27 @@ class MAPPO:
 
         if return_decoded:
 
-            decoded_messages = []
-
-            for i in range(NUM_AGENTS):
-
-                decoded_messages.append(
-                    self.actor.communication.decoder.decode(
-                        local_hidden[i]
-                    )
+            # Built from the SAME field_ids used above for `messages`/
+            # `communication_field_ids` -- NOT a separate
+            # decoder.decode() forward pass, which is not guaranteed
+            # to agree with what sample_message() actually sampled
+            # (and therefore what was actually encoded into `messages`
+            # and transmitted). This is the StructuredMessage list
+            # that feeds evaluate_and_update_trust() in train.py, so a
+            # mismatch here meant trust could be updated against a
+            # claim the sender never actually sent.
+            decoded_messages = [
+                self.communication.structured_message_from_ids(
+                    field_ids,
+                    index=i,
                 )
+                for i in range(NUM_AGENTS)
+            ]
 
             self.current_decoded_messages = (
                 decoded_messages
             )
 
-            # return (
-            #     messages,
-            #     decoded_messages,
-            # )
             return (
                 messages,
                 decoded_messages,
@@ -530,8 +539,6 @@ class MAPPO:
                 communication_entropies.detach().cpu().numpy(),
             )
 
-
-        # return messages
         return (
             messages,
             communication_field_ids.detach().cpu().numpy(),

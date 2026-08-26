@@ -78,6 +78,34 @@ class ConfidenceLevel(IntEnum):
     VERY_HIGH = 3
 
 
+# StructuredMessage.confidence is a continuous float in [0, 1] (see
+# below), but it is actually PRODUCED by sampling one of the four
+# ConfidenceLevel categories above -- the decoder has no continuous
+# confidence head. This is the single canonical mapping between the
+# two representations. Anything that needs to turn a sampled
+# ConfidenceLevel into StructuredMessage.confidence (decoder.py's own
+# decode(), and structured_communication.py when building a message
+# directly from sampled field_ids) should import and use this, rather
+# than hardcoding its own conversion -- two independently-hardcoded
+# mappings drifting apart would silently break confidence semantics
+# without ever raising an error.
+CONFIDENCE_LEVEL_VALUES = {
+    ConfidenceLevel.VERY_LOW: 0.125,
+    ConfidenceLevel.LOW: 0.375,
+    ConfidenceLevel.HIGH: 0.625,
+    ConfidenceLevel.VERY_HIGH: 0.875,
+}
+
+
+def confidence_level_to_value(level) -> float:
+    """
+    Convert a ConfidenceLevel (or a raw int/enum-castable value) into
+    its canonical [0, 1] float, via CONFIDENCE_LEVEL_VALUES.
+    """
+
+    return CONFIDENCE_LEVEL_VALUES[ConfidenceLevel(int(level))]
+
+
 class HostStatus(IntEnum):
     """
     Reported status of the target.

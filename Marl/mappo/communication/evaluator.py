@@ -209,35 +209,45 @@ class MessageEvaluator:
         current_state: Optional[Dict[str, Any]] = None,
     ) -> MessageEvaluation:
         """
-        Evaluate a structured message against ground truth.
+        Evaluate a structured message against pure, message-independent
+        ground truth for the sender's zone.
 
         Parameters
         ----------
         message:
-            Structured message sent by another Blue agent.
+            Structured message sent by a Blue agent.
 
         ground_truth:
-            Ground-truth information relevant to the message.
+            Zone truth produced by CC4Env.get_ground_truth(sender_id).
+            This is completely independent of `message` -- it describes
+            what is actually true in the sender's zone, and it is THIS
+            method's job (not the environment's) to grade the message
+            against it. Expected shape:
 
-            Expected keys can include:
+                {
+                    "target_status": {
+                        target_id (int): {
+                            "event_type":   EventType,
+                            "threat_level": ThreatLevel,
+                            "status":       HostStatus,
+                        },
+                        ...   # one entry per relevant host in the zone
+                    },
+                    "zone_quiet": bool,
+                }
 
-                event_type
-                target_type
-                target_id
-                threat_level
-                status
-                compromised
-                suspicious
-                useful
-
-            The exact contents can be adapted to the CC4 state
-            representation.
+            Because the target the agent named is looked up directly in
+            `target_status`, a claim about the WRONG host is never
+            silently re-pointed at a different real host: the wrong host
+            is simply absent from `target_status` and scores as incorrect.
 
         previous_state:
-            Optional state before the environment step.
+            Optional state before the environment step (unused when the
+            zone truth carries an explicit usefulness signal, which it
+            always does; kept for interface compatibility).
 
         current_state:
-            Optional state after the environment step.
+            Optional state after the environment step (see above).
 
         Returns
         -------
@@ -255,44 +265,120 @@ class MessageEvaluator:
                 "ground_truth must be a dictionary."
             )
 
-        event_score = self._evaluate_event(
-            message,
-            ground_truth,
+        target_status = ground_truth.get("target_status", {})
+
+        if not isinstance(target_status, dict):
+            target_status = {}
+
+        zone_quiet = ground_truth.get(
+            "zone_quiet",
+            len(target_status) == 0,
         )
 
-        target_score = self._evaluate_target(
+        # Decide -- message-independently -- whether the target the agent
+        # named was correct. Tri-state:
+        #   True  -> named a genuinely relevant host, or correctly reported
+        #            a quiet zone
+        #   False -> named a wrong/uninvolved host, or stayed silent while
+        #            something was actually happening
+        #   None  -> ungraded (SUBNET claim): host-level truth cannot verify
+        #            a subnet-scoped claim, so the target is EXCLUDED from
+        #            the score (its weight is renormalized away) rather than
+        #            being assigned a neutral 0.5.
+        target_correct = self._evaluate_target(
             message,
-            ground_truth,
+            target_status,
+            zone_quiet,
+        )
+
+        # Reference fact (event_type / threat_level / status) that the
+        # preserved event/threat/status sub-evaluators grade against. This
+        # never lets the message rewrite the truth; it only selects WHICH
+        # real host (or the quiet baseline) the claim is checked against.
+        reference_fact = self._resolve_reference_fact(
+            message,
+            target_status,
+            zone_quiet,
+        )
+
+        # Event / threat / status partial scoring is preserved unchanged and
+        # is always graded -- even for a SUBNET claim, whose event/threat/
+        # status can still be checked against the zone.
+        event_score = self._evaluate_event(
+            message,
+            reference_fact,
         )
 
         threat_score = self._evaluate_threat(
             message,
-            ground_truth,
+            reference_fact,
         )
 
         status_score = self._evaluate_status(
             message,
-            ground_truth,
+            reference_fact,
         )
 
-        usefulness_score = self._evaluate_usefulness(
-            message,
-            ground_truth,
-            previous_state,
-            current_state,
+        # Target correctness maps to a score, or is EXCLUDED (None) when the
+        # claim is ungraded (SUBNET).
+        if target_correct is None:
+            target_score = None
+        else:
+            target_score = 1.0 if target_correct else 0.0
+
+        # Usefulness is DERIVED from target correctness -- there is no longer
+        # a separate ground-truth "useful" flag. A correctly identified
+        # relevant host / quiet zone is useful; a wrong target is not; an
+        # ungraded target excludes usefulness too.
+        if target_correct is None:
+            usefulness_score = None
+        else:
+            usefulness_score = 1.0 if target_correct else 0.0
+
+        # Weighted sum over ONLY the graded components. Any excluded
+        # component (score is None) is dropped and its weight renormalized
+        # away, so a SUBNET claim is scored over event + threat + status
+        # rather than being handed a neutral target_score of 0.5.
+        weighted_components = (
+            (event_score, self.event_weight),
+            (target_score, self.target_weight),
+            (threat_score, self.threat_weight),
+            (status_score, self.status_weight),
+            (usefulness_score, self.usefulness_weight),
         )
 
-        overall_score = (
-            self.event_weight * event_score
-            + self.target_weight * target_score
-            + self.threat_weight * threat_score
-            + self.status_weight * status_score
-            + self.usefulness_weight * usefulness_score
+        active_weight = sum(
+            weight
+            for score, weight in weighted_components
+            if score is not None
         )
+
+        if active_weight <= 0.0:
+            # Defensive only: event/threat/status are always graded, so at
+            # least three components are present in practice.
+            overall_score = 0.5
+        else:
+            overall_score = (
+                sum(
+                    weight * score
+                    for score, weight in weighted_components
+                    if score is not None
+                )
+                / active_weight
+            )
 
         overall_score = self._clamp(
             overall_score
         )
+
+        excluded_components = [
+            name
+            for name, score in (
+                ("target", target_score),
+                ("usefulness", usefulness_score),
+            )
+            if score is None
+        ]
 
         return MessageEvaluation(
             overall_score=overall_score,
@@ -305,6 +391,10 @@ class MessageEvaluator:
             details={
                 "message": message.as_dict(),
                 "ground_truth": ground_truth,
+                "graded": True,
+                "reference_fact": reference_fact,
+                "target_correct": target_correct,
+                "excluded_components": excluded_components,
             },
         )
 
@@ -393,52 +483,106 @@ class MessageEvaluator:
     def _evaluate_target(
         self,
         message: StructuredMessage,
-        ground_truth: Dict[str, Any],
-    ) -> float:
+        target_status: Dict[int, Dict[str, Any]],
+        zone_quiet: bool,
+    ) -> Optional[bool]:
         """
-        Evaluate target correctness.
+        Decide whether the target the message named was correct, purely by
+        looking the claim up in the message-independent zone truth. The
+        message never rewrites the truth: a wrong host is simply absent from
+        ``target_status`` and is scored as incorrect -- it is never silently
+        re-pointed at a different, genuinely-compromised host (the old
+        wrong-target rescue bug).
 
-        Target is treated as highly important because a correct
-        threat report about the wrong host is not operationally
-        equivalent to a correct target identification.
+            HOST + target_id present in target_status -> True
+                (named a genuinely relevant host)
+
+            HOST + target_id absent from target_status -> False
+                (named a normal / uninvolved host: wrong target)
+
+            NONE + zone_quiet -> True
+                (correctly reported that nothing was happening)
+
+            NONE + not zone_quiet -> False
+                (stayed silent while something was actually happening)
+
+            SUBNET -> None
+                (ungraded: ground truth is host-level, so a subnet-scoped
+                claim cannot be verified; the caller EXCLUDES it from the
+                score and renormalizes the remaining weights)
         """
 
-        actual_type = ground_truth.get(
-            "target_type"
+        if message.target_type == TargetType.HOST:
+            return message.target_id in target_status
+
+        if message.target_type == TargetType.SUBNET:
+            return None
+
+        # TargetType.NONE: no specific host was named. Correct precisely when
+        # the zone really was quiet.
+        return bool(zone_quiet)
+
+    # ------------------------------------------------------------------
+    # Message-independent target resolution
+    # ------------------------------------------------------------------
+
+    def _resolve_reference_fact(
+        self,
+        message: StructuredMessage,
+        target_status: Dict[int, Dict[str, Any]],
+        zone_quiet: bool,
+    ) -> Dict[str, Any]:
+        """
+        Pick the reference fact (event_type / threat_level / status) that the
+        preserved event/threat/status sub-evaluators grade the message
+        against. This NEVER lets the message rewrite the truth -- it only
+        selects WHICH real host (or the quiet baseline) the field-level
+        claims are checked against:
+
+            HOST present  -> that host's real fact.
+            HOST absent   -> NORMAL / NONE baseline (uninvolved host).
+            NONE / SUBNET, zone quiet     -> NORMAL / NONE baseline.
+            NONE / SUBNET, zone not quiet -> the most severe real host in the
+                                             zone, so a broad-but-directionally
+                                             correct alert still earns partial
+                                             event/threat/status credit.
+
+        Whether the *target itself* was correct is decided separately in
+        _evaluate_target(); this method only supplies the field-level truth.
+        A host that is not genuinely relevant is absent from `target_status`,
+        so a HOST claim about it is graded against the NORMAL / NONE fact --
+        never re-pointed at a different, genuinely-compromised host.
+        """
+
+        normal_fact = {
+            "event_type": EventType.NONE,
+            "threat_level": ThreatLevel.LOW,
+            "status": HostStatus.NORMAL,
+        }
+
+        # A specific host was named: grade against that exact host when it is
+        # genuinely relevant, otherwise against the NORMAL / NONE baseline.
+        if message.target_type == TargetType.HOST:
+
+            fact = target_status.get(message.target_id)
+
+            if fact is not None:
+                return dict(fact)
+
+            return dict(normal_fact)
+
+        # No specific host (NONE) or a subnet-scoped claim (SUBNET): a quiet
+        # zone grades against the NORMAL / NONE baseline; otherwise the
+        # field-level claims are checked against the most severe real host.
+        if zone_quiet or not target_status:
+            return dict(normal_fact)
+
+        most_severe = max(
+            target_status.values(),
+            key=lambda entry: int(entry["threat_level"]),
         )
 
-        actual_id = ground_truth.get(
-            "target_id"
-        )
-
-        if actual_type is None and actual_id is None:
-            return 0.5
-
-        score = 0.0
-
-        if actual_type is not None:
-
-            actual_type = self._normalize_enum(
-                actual_type,
-                TargetType,
-            )
-
-            if actual_type is not None:
-                if message.target_type == actual_type:
-                    score += 0.5
-
-        if actual_id is not None:
-
-            try:
-                actual_id = int(actual_id)
-            except (TypeError, ValueError):
-                actual_id = None
-
-            if actual_id is not None:
-                if message.target_id == actual_id:
-                    score += 0.5
-
-        return score
+        return dict(most_severe)
 
     # ------------------------------------------------------------------
     # Threat evaluation
@@ -561,138 +705,6 @@ class MessageEvaluator:
             return 0.5
 
         return 0.0
-
-    # ------------------------------------------------------------------
-    # Usefulness evaluation
-    # ------------------------------------------------------------------
-
-    def _evaluate_usefulness(
-        self,
-        message: StructuredMessage,
-        ground_truth: Dict[str, Any],
-        previous_state: Optional[Dict[str, Any]],
-        current_state: Optional[Dict[str, Any]],
-    ) -> float:
-        """
-        Evaluate operational usefulness.
-
-        Priority order:
-
-        1. Explicit evaluator signal, if supplied.
-        2. Whether the message caused a useful state change.
-        3. Whether the message contains meaningful information.
-        """
-
-        # --------------------------------------------------------------
-        # Explicit usefulness signal
-        # --------------------------------------------------------------
-
-        explicit_usefulness = ground_truth.get(
-            "useful"
-        )
-
-        if explicit_usefulness is not None:
-
-            try:
-                return self._clamp(
-                    float(explicit_usefulness)
-                )
-            except (TypeError, ValueError):
-                pass
-
-        # --------------------------------------------------------------
-        # State-transition based usefulness
-        # --------------------------------------------------------------
-
-        if (
-            previous_state is not None
-            and current_state is not None
-        ):
-
-            state_change = self._measure_state_change(
-                previous_state,
-                current_state,
-            )
-
-            if state_change > 0.0:
-
-                # A message associated with a meaningful environment
-                # change receives a positive usefulness score.
-                return self._clamp(
-                    state_change
-                )
-
-        # --------------------------------------------------------------
-        # Fallback
-        # --------------------------------------------------------------
-
-        # A message containing no event is not useful.
-        if message.event_type == EventType.NONE:
-            return 0.0
-
-        # A meaningful structured message gets a neutral-positive
-        # baseline until explicit operational feedback is available.
-        return 0.5
-
-    # ------------------------------------------------------------------
-    # State change
-    # ------------------------------------------------------------------
-
-    def _measure_state_change(
-        self,
-        previous_state: Dict[str, Any],
-        current_state: Dict[str, Any],
-    ) -> float:
-        """
-        Estimate whether the environment changed in a meaningful way.
-
-        This is intentionally conservative.
-
-        The current implementation looks for common CC4-style
-        indicators such as:
-
-            compromised
-            suspicious
-            active_sessions
-            malicious_processes
-            network_connections
-
-        The function can later be replaced by a CC4-specific evaluator
-        once we define exactly which state transitions correspond to
-        useful defensive outcomes.
-        """
-
-        indicators = [
-            "compromised",
-            "suspicious",
-            "active_sessions",
-            "malicious_processes",
-            "network_connections",
-        ]
-
-        changed = 0
-        available = 0
-
-        for key in indicators:
-
-            if (
-                key not in previous_state
-                or key not in current_state
-            ):
-                continue
-
-            available += 1
-
-            if (
-                previous_state[key]
-                != current_state[key]
-            ):
-                changed += 1
-
-        if available == 0:
-            return 0.0
-
-        return changed / available
 
     # ------------------------------------------------------------------
     # Confidence adjustment

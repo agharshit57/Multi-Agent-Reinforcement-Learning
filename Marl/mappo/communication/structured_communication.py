@@ -58,7 +58,7 @@ import torch.nn as nn
 
 from .decoder import MessageDecoder
 from .encoder import MessageEncoder
-from .schema import StructuredMessage
+from .schema import StructuredMessage, confidence_level_to_value
 from .trust import DynamicTrust
 
 
@@ -260,7 +260,54 @@ class StructuredCommunication(nn.Module):
                 hidden,
                 field_ids,
             )
-    
+
+    # ==================================================================
+    # Build a StructuredMessage from already-sampled field_ids
+    # ==================================================================
+
+    def structured_message_from_ids(
+        self,
+        field_ids: Dict[str, torch.Tensor],
+        index: int = 0,
+    ) -> StructuredMessage:
+        """
+        Build a StructuredMessage directly from field_ids that were
+        already sampled (e.g. by generate_message()), instead of
+        re-decoding `hidden` through the decoder a second time.
+
+        This matters: decoder.decode(hidden) is a SEPARATE forward
+        pass and is not guaranteed to reproduce the exact categories
+        sample_message() already sampled (e.g. if decode() is
+        greedy/argmax while sample_message() is stochastic). Building
+        the StructuredMessage from the same field_ids used to build
+        the transmitted communication_vector (via encode_from_ids)
+        guarantees the message a receiver/evaluator sees always
+        matches what was actually encoded and sent -- there is no
+        second, independent decoding that can silently disagree with
+        it.
+
+        Parameters
+        ----------
+        field_ids:
+            Dict of category-index tensors, each shape [B], as
+            returned by generate_message()/sample_message().
+
+        index:
+            Which batch row to build a StructuredMessage for.
+        """
+
+        return StructuredMessage(
+            event_type=int(field_ids["event_type"][index].item()),
+            target_type=int(field_ids["target_type"][index].item()),
+            target_id=int(field_ids["target_id"][index].item()),
+            threat_level=int(field_ids["threat_level"][index].item()),
+            confidence=confidence_level_to_value(
+                field_ids["confidence"][index].item()
+            ),
+            status=int(field_ids["status"][index].item()),
+            priority=int(field_ids["priority"][index].item()),
+        )
+
     @torch.no_grad()
     def generate_hard_message(
         self,
@@ -289,7 +336,10 @@ class StructuredCommunication(nn.Module):
             self.encoder.encode_from_ids(field_ids)
         )
 
-        decoded = self.decoder.decode(hidden)
+        # Built from the SAME field_ids used above -- see
+        # structured_message_from_ids()'s docstring for why this
+        # replaces a separate decoder.decode(hidden) call.
+        decoded = self.structured_message_from_ids(field_ids, index=0)
 
         return (
             decoded,
@@ -747,4 +797,5 @@ class StructuredCommunication(nn.Module):
 
     def get_num_agents(self) -> int:
         """Return the number of communicating agents."""
+
         return self.num_agents

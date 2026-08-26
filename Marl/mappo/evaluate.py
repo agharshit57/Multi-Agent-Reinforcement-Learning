@@ -1228,12 +1228,7 @@ def main():
         "Episodes     : "
         f"{args.episodes} per Red agent"
     )
-
     print("=" * 72)
-
-    # ======================================================
-    # Evaluate
-    # ======================================================
 
     for checkpoint in checkpoints:
 
@@ -1243,11 +1238,5 @@ def main():
             num_episodes=args.episodes,
             deterministic=deterministic,
         )
-
-
-# ==========================================================
-# Entry point
-# ==========================================================
-
 if __name__ == "__main__":
     main()

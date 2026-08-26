@@ -41,6 +41,7 @@ from .schema import (
     StructuredMessage,
     TargetType,
     ThreatLevel,
+    confidence_level_to_value,
 )
 
 # Fields sampled the same way every time: (field_name, output_dict_key, enum_type)
@@ -182,7 +183,11 @@ class MessageDecoder(nn.Module):
         priority = Priority(torch.argmax(outputs["priority_logits"][0]).item())
 
         confidence_level = ConfidenceLevel(torch.argmax(outputs["confidence_logits"][0]).item())
-        confidence = float(confidence_level) / (len(ConfidenceLevel) - 1)  # bucket -> [0,1] for evaluator.py
+        # Canonical bucket -> [0,1] mapping, shared with
+        # structured_communication.py.structured_message_from_ids() --
+        # see schema.py's CONFIDENCE_LEVEL_VALUES docstring for why this
+        # must not be a separately-hardcoded conversion.
+        confidence = confidence_level_to_value(confidence_level)
 
         if outputs["target_logits"] is None:
             target_id = 0

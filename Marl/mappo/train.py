@@ -262,36 +262,26 @@ def get_ground_truth_for_message(
     current_info,
 ):
     """
-    Obtain training-side ground truth for evaluating a message.
+    Obtain pure, message-independent ground truth for the sender's zone.
 
-    Supported environment interfaces (checked in order):
+    CC4Env.get_ground_truth(sender_id) returns what is ACTUALLY true in
+    the sender's zone -- it does NOT see the message, the receiver, or the
+    pre/post-step info dicts. Grading the message against that truth is
+    the MessageEvaluator's job (see communication/evaluator.py), which is
+    what keeps a wrong-target claim from being silently rescued.
 
-        env.get_message_ground_truth(...)
-        env.get_ground_truth(...)
+    The receiver_id / message / previous_info / current_info parameters
+    are retained only for call-site compatibility and are intentionally
+    unused here.
 
-    Returns None if neither exists -- this deliberately prevents
-    training trust using fabricated labels.
+    Returns None if the environment cannot produce ground truth (e.g. the
+    sender id cannot be resolved) -- this deliberately prevents training
+    trust on fabricated labels.
     """
-
-    if hasattr(env, "get_message_ground_truth"):
-
-        return env.get_message_ground_truth(
-            sender_id=sender_id,
-            receiver_id=receiver_id,
-            message=message,
-            previous_info=previous_info,
-            current_info=current_info,
-        )
 
     if hasattr(env, "get_ground_truth"):
 
-        return env.get_ground_truth(
-            sender_id=sender_id,
-            receiver_id=receiver_id,
-            message=message,
-            previous_info=previous_info,
-            current_info=current_info,
-        )
+        return env.get_ground_truth(sender_id)
 
     return None
 
