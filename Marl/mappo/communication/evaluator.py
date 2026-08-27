@@ -20,13 +20,15 @@ Flow:
     Environment step
        |
        v
-    Ground-truth state
+    Ground-truth state (sender's zone -- receiver-independent)
        |
        v
-    MessageEvaluator
+    MessageEvaluator (correctness: receiver-independent
+                       usefulness:  receiver-dependent, via
+                                    receiver_relevance)
        |
        v
-    message_quality [0, 1]
+    message_quality [0, 1]  (per (sender, receiver) pair)
        |
        v
     DynamicTrust.update()
@@ -36,11 +38,31 @@ IMPORTANT
 The ground-truth state used here is training/evaluation-side information.
 It must NOT be provided to the Blue agents as part of their observation.
 
+Receiver-specific trust
+------------------------
+Whether a message's claim about the SENDER's zone is factually correct
+is an objective fact about the world -- it does not depend on who is
+listening, so `event_score`, `target_score`, `threat_score`, and
+`status_score` are computed exactly once per (sender, message) and are
+never receiver-conditioned. Grading them against a *receiver's* zone
+instead would be meaningless, since the message says nothing about the
+receiver's zone.
+
+Operational *usefulness*, however, genuinely is receiver-relative: the
+same, objectively-correct report matters more to a receiver whose zone
+is closely operationally linked to the sender's zone than to one whose
+zone is not. `usefulness_score` therefore takes an optional
+`receiver_relevance` in [0, 1] (supplied by the caller, which is where
+CC4 topology knowledge belongs -- this module still does not know
+anything about zones, subnets, or CybORG) and blends it in. Passing no
+`receiver_relevance` (or 1.0) reproduces the previous, receiver-blind
+behavior exactly, so existing callers are unaffected until they opt in.
+
 This module does NOT:
-    - modify trust
-    - encode messages
     - decode messages
-    - interact directly with CybORG
+    - encode messages
+    - generate messages
+    - interact with CybORG
     - perform MAPPO updates
 """
 
@@ -88,7 +110,8 @@ class MessageEvaluation:
         Correctness of the reported status.
 
     usefulness_score:
-        Whether the information was operationally useful.
+        Whether the information was operationally useful -- receiver-
+        dependent (see module docstring), unlike the four scores above.
 
     confidence:
         Confidence declared by the sender.
@@ -207,6 +230,7 @@ class MessageEvaluator:
         ground_truth: Dict[str, Any],
         previous_state: Optional[Dict[str, Any]] = None,
         current_state: Optional[Dict[str, Any]] = None,
+        receiver_relevance: float = 1.0,
     ) -> MessageEvaluation:
         """
         Evaluate a structured message against pure, message-independent
@@ -241,6 +265,9 @@ class MessageEvaluator:
             silently re-pointed at a different real host: the wrong host
             is simply absent from `target_status` and scores as incorrect.
 
+            This is the SENDER's zone truth regardless of who receives
+            the message -- correctness does not depend on the receiver.
+
         previous_state:
             Optional state before the environment step (unused when the
             zone truth carries an explicit usefulness signal, which it
@@ -248,6 +275,18 @@ class MessageEvaluator:
 
         current_state:
             Optional state after the environment step (see above).
+
+        receiver_relevance:
+            How operationally relevant the sender's zone is to the
+            specific receiver this evaluation is being scored for, in
+            [0, 1]. 1.0 (the default) means fully relevant and
+            reproduces the previous receiver-blind behavior exactly, so
+            existing callers that don't pass this are unaffected. This
+            is the ONLY input that may legitimately vary per receiver
+            for the same (sender, message) pair -- everything else
+            graded here is an objective fact about the sender's zone.
+            Callers (e.g. train.py) own the topology knowledge needed
+            to compute this; this module intentionally does not.
 
         Returns
         -------
@@ -264,6 +303,8 @@ class MessageEvaluator:
             raise TypeError(
                 "ground_truth must be a dictionary."
             )
+
+        receiver_relevance = self._clamp(receiver_relevance)
 
         target_status = ground_truth.get("target_status", {})
 
@@ -285,6 +326,9 @@ class MessageEvaluator:
         #            a subnet-scoped claim, so the target is EXCLUDED from
         #            the score (its weight is renormalized away) rather than
         #            being assigned a neutral 0.5.
+        #
+        # This is receiver-independent: it's a fact about the message and
+        # the sender's zone, not about who's listening.
         target_correct = self._evaluate_target(
             message,
             target_status,
@@ -303,7 +347,8 @@ class MessageEvaluator:
 
         # Event / threat / status partial scoring is preserved unchanged and
         # is always graded -- even for a SUBNET claim, whose event/threat/
-        # status can still be checked against the zone.
+        # status can still be checked against the zone. Also
+        # receiver-independent, for the same reason as target_correct.
         event_score = self._evaluate_event(
             message,
             reference_fact,
@@ -320,20 +365,27 @@ class MessageEvaluator:
         )
 
         # Target correctness maps to a score, or is EXCLUDED (None) when the
-        # claim is ungraded (SUBNET).
+        # claim is ungraded (SUBNET). Receiver-independent.
         if target_correct is None:
             target_score = None
         else:
             target_score = 1.0 if target_correct else 0.0
 
-        # Usefulness is DERIVED from target correctness -- there is no longer
-        # a separate ground-truth "useful" flag. A correctly identified
-        # relevant host / quiet zone is useful; a wrong target is not; an
-        # ungraded target excludes usefulness too.
+        # Usefulness is the ONE receiver-dependent axis. Incorrect
+        # information isn't useful to anyone, regardless of relevance.
+        # Correct information's usefulness scales with how operationally
+        # relevant the sender's zone is to THIS receiver: a 0.5 floor
+        # keeps some general situational-awareness value even for a
+        # low-relevance receiver, rising to 1.0 for a highly relevant one.
+        # This is what lets alpha[sender, receiver]/beta[sender, receiver]
+        # in trust.py -- already pairwise -- actually diverge across
+        # receivers instead of every receiver getting an identical score.
         if target_correct is None:
             usefulness_score = None
+        elif target_correct:
+            usefulness_score = 0.5 + 0.5 * receiver_relevance
         else:
-            usefulness_score = 1.0 if target_correct else 0.0
+            usefulness_score = 0.0
 
         # Weighted sum over ONLY the graded components. Any excluded
         # component (score is None) is dropped and its weight renormalized
@@ -394,6 +446,7 @@ class MessageEvaluator:
                 "graded": True,
                 "reference_fact": reference_fact,
                 "target_correct": target_correct,
+                "receiver_relevance": receiver_relevance,
                 "excluded_components": excluded_components,
             },
         )

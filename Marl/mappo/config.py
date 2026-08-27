@@ -43,7 +43,7 @@ ACTION_DIM = LARGE_ACTION_DIM
 # ==========================================================
 # MAPPO Hyperparameters
 # ==========================================================
-TOTAL_EPISODES = 1000                             
+TOTAL_EPISODES = 20                             
 
 ROLLOUT_STEPS = 512
 
@@ -97,8 +97,8 @@ PRINT_EVERY = 10
 
 SAVE_EVERY = 500
 
-CHECKPOINT_DIR = "checkpoints/AAM_AFTER_FIXES"
-LOG_DIR = "evaluation/AAM_AFTER_FIXES"
+CHECKPOINT_DIR = "checkpoints/groundTruth"
+LOG_DIR = "evaluation/groundTruth"
 
 
 # ==========================================================

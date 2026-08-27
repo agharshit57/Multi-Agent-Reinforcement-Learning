@@ -45,6 +45,19 @@ exists yet.
 Trust is updated only when a valid training-side ground-truth
 representation is available (see env.py.get_ground_truth). Ground
 truth is NEVER passed to the Blue agents.
+
+Per-receiver trust
+-------------------
+
+See `get_receiver_relevance` and `evaluate_and_update_trust` below: a
+message's factual correctness (event/target/threat/status) is graded
+once per sender against the sender's own zone, since that's an
+objective fact independent of who's listening. Only the resulting
+message *quality* fed to trust is receiver-specific, via how
+operationally relevant the sender's zone is to each particular
+receiver -- this is what lets DynamicTrust's already-pairwise
+alpha[sender, receiver]/beta[sender, receiver] storage actually diverge
+across receivers instead of every receiver getting an identical score.
 """
 
 import os
@@ -94,6 +107,53 @@ RED_AGENT_MAP = {
     "RandomSelectRedAgent": RandomSelectRedAgent,
     "FiniteStateRedAgent": FiniteStateRedAgent,
 }
+
+
+############################################################
+# Receiver-relevance topology (for per-receiver trust)
+############################################################
+#
+# A sender's message reports on the SENDER's own zone, so whether it
+# is factually CORRECT is an objective fact about the world -- it
+# does not depend on who is listening (see get_ground_truth_for_message
+# below, which stays sender-only on purpose). How operationally USEFUL
+# that same, objectively-true report is, however, genuinely differs by
+# receiver: an alert about Operational Zone A matters far more to
+# Restricted Zone A's defender (directly network-linked, same deployed
+# network, per the CC4 topology) than it does to HQ or to Deployed
+# Network B. This table is what MessageEvaluator.evaluate()'s
+# `receiver_relevance` argument is built from -- it's the one place
+# receiver identity is allowed to change the resulting quality score
+# (see evaluator.py's module docstring for the full rationale).
+#
+# Agent -> zone assignment (fixed, per the CC4 scenario spec):
+#   0: Restricted Zone A     1: Operational Zone A
+#   2: Restricted Zone B     3: Operational Zone B
+#   4: HQ (Admin / Office / Public Access)
+_DIRECTLY_LINKED_AGENT_PAIRS = {
+    (0, 1), (1, 0),   # Restricted A <-> Operational A
+    (2, 3), (3, 2),   # Restricted B <-> Operational B
+}
+
+# Baseline relevance for any pair that isn't directly, operationally
+# linked (still nonzero: a correct report elsewhere still has some
+# general situational-awareness value to every receiver).
+_DEFAULT_RECEIVER_RELEVANCE = 0.5
+
+
+def get_receiver_relevance(sender_id: int, receiver_id: int) -> float:
+    """
+    How operationally relevant sender_id's zone is to receiver_id, in
+    [0, 1]. This is the ONLY signal that varies message quality per
+    receiver -- ground truth and objective correctness are computed
+    once per sender and reused for every receiver (see
+    evaluate_and_update_trust).
+    """
+
+    if (sender_id, receiver_id) in _DIRECTLY_LINKED_AGENT_PAIRS:
+        return 1.0
+
+    return _DEFAULT_RECEIVER_RELEVANCE
 
 
 ############################################################
@@ -270,9 +330,13 @@ def get_ground_truth_for_message(
     the MessageEvaluator's job (see communication/evaluator.py), which is
     what keeps a wrong-target claim from being silently rescued.
 
-    The receiver_id / message / previous_info / current_info parameters
-    are retained only for call-site compatibility and are intentionally
-    unused here.
+    receiver_id is intentionally unused: correctness of a claim about the
+    SENDER's zone is an objective fact and does not depend on who is
+    receiving it. (Receiver-specific behavior belongs in *usefulness*,
+    computed separately per receiver in evaluate_and_update_trust via
+    get_receiver_relevance -- not here.) The receiver_id / message /
+    previous_info / current_info parameters are retained only for
+    call-site compatibility and are intentionally unused here.
 
     Returns None if the environment cannot produce ground truth (e.g. the
     sender id cannot be resolved) -- this deliberately prevents training
@@ -304,9 +368,17 @@ def evaluate_and_update_trust(
     outgoing_structured_messages: list of StructuredMessage, index = sender.
 
     Trust convention: trust(sender, receiver) means how much receiver
-    trusts sender. Each sender's message is evaluated separately for
-    every receiver. If ground truth is unavailable, no trust update
-    is performed.
+    trusts sender. Ground truth and objective correctness (event /
+    target / threat / status) describe the SENDER's own zone and are
+    therefore computed ONCE per sender -- they do not depend on who is
+    receiving the message. Each receiver still gets its own trust
+    update, but what varies per receiver is *usefulness*: how
+    operationally relevant the sender's zone is to that specific
+    receiver (see get_receiver_relevance). That's what lets
+    DynamicTrust's pairwise alpha[sender, receiver]/beta[sender,
+    receiver] storage actually diverge across receivers, rather than
+    every receiver silently getting an identical quality score. If
+    ground truth is unavailable, no trust update is performed.
     """
 
     if (
@@ -325,28 +397,44 @@ def evaluate_and_update_trust(
         if hasattr(message, "is_empty") and message.is_empty():
             continue
 
+        # Objective ground truth for the sender's own zone -- computed
+        # once per sender/message, NOT once per receiver, since
+        # correctness of a claim about the sender's zone does not
+        # depend on who's listening. (Do not swap this to
+        # get_ground_truth(receiver_id): the message says nothing
+        # about the receiver's zone, so there would be nothing
+        # meaningful to check it against.)
+        ground_truth = get_ground_truth_for_message(
+            env=env,
+            sender_id=sender_id,
+            receiver_id=None,
+            message=message,
+            previous_info=previous_info,
+            current_info=current_info,
+        )
+
+        if ground_truth is None:
+            continue
+
         for receiver_id in range(NUM_AGENTS):
 
             if sender_id == receiver_id:
                 continue
 
-            ground_truth = get_ground_truth_for_message(
-                env=env,
-                sender_id=sender_id,
-                receiver_id=receiver_id,
-                message=message,
-                previous_info=previous_info,
-                current_info=current_info,
+            # The one receiver-specific input: how relevant the
+            # sender's (objectively correct-or-not) zone report is to
+            # THIS receiver.
+            receiver_relevance = get_receiver_relevance(
+                sender_id,
+                receiver_id,
             )
-
-            if ground_truth is None:
-                continue
 
             evaluation = evaluator.evaluate(
                 message=message,
                 ground_truth=ground_truth,
                 previous_state=previous_info,
                 current_state=current_info,
+                receiver_relevance=receiver_relevance,
             )
 
             quality = evaluator.confidence_adjusted_score(evaluation)
