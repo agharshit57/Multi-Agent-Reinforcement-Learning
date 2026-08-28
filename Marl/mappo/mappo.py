@@ -52,6 +52,47 @@ pipeline.
 The detached ``received_messages`` stored in the buffer are retained
 for compatibility/debugging, but are NOT used as the differentiable
 communication source during PPO optimization.
+
+Eval/train lifecycle
+---------------------
+
+The model contains dropout (inside the actor's and critic's
+nn.MultiheadAttention layers), and nn.Module defaults to `.train()`
+mode on construction. `__init__` explicitly puts the model in
+`.eval()` before returning, so the very first rollout -- collected
+before any PPO update has happened -- runs with dropout OFF, exactly
+like every later rollout. `train.py`'s existing cycle (`ppo.train()`
+immediately before `update()`, `ppo.eval()` immediately after) is
+what keeps it that way: `.train()` is only ever active while computing
+the PPO update itself, and `.eval()` is restored before the next
+rollout starts.
+
+Communication credit assignment
+---------------------------------
+
+`update()`'s communication PPO term applies ONE receiver-level
+advantage to every sender that receiver heard from -- if receiver B
+gets a positive advantage, messages from every sender B received are
+reinforced together, even though only one of them may actually have
+been useful. This is deliberately softened, not eliminated: the
+advantage used in `comm_surrogate1/2` is re-weighted per (sender,
+receiver) pair by `mb_trust_weights` -- the receiver's own current
+trust in each sender (see communication/trust.py, and
+evaluator.py/train.py's receiver-relevance fix, which is what makes
+that trust genuinely per-sender-per-receiver in the first place).
+This lets a receiver's advantage preferentially reinforce the senders
+it has reason to trust more. It is a soft re-weighting of the
+advantage magnitude only -- `comm_valid_count` (the loss's averaging
+denominator) still counts actual valid, non-self rows exactly as
+before, so low-trust senders are still trained on, just with a
+smaller effective gradient contribution, rather than being dropped
+from the batch. The communication entropy term is intentionally left
+unweighted: exploration is exactly what a currently-low-trust sender
+needs in order to earn trust, so down-weighting it there would be
+self-defeating. If a future need arises for exact single-sender credit
+assignment (e.g. counterfactual/difference-reward style attribution),
+that would be a larger change to the communication objective itself,
+not a tweak to this weighting.
 """
 
 import numpy as np
@@ -109,6 +150,24 @@ class MAPPO:
         self.actor = self.model.actor
 
         self.critic = self.model.critic
+
+        # ------------------------------------------------------
+        # Eval/train lifecycle
+        #
+        # nn.Module defaults to .train() mode on construction, and
+        # this model has dropout inside its attention layers. Without
+        # this, the very first rollout (collected before any PPO
+        # update, hence before train.py's first ppo.eval() call)
+        # would run with dropout active while every subsequent
+        # rollout does not -- a stochastically different network for
+        # action selection AND communication generation on step one
+        # only. Starting in eval() here, combined with train.py's
+        # existing train()-before-update / eval()-after-update cycle,
+        # keeps every rollout (including the first) dropout-free, and
+        # only the PPO update itself runs with dropout active.
+        # ------------------------------------------------------
+
+        self.model.eval()
 
         # ------------------------------------------------------
         # Structured communication
@@ -1473,6 +1532,14 @@ class MAPPO:
                 trust_state
             )
 
+        # Loading a checkpoint doesn't go through __init__, so the
+        # same eval-by-default guarantee is restored here explicitly
+        # -- otherwise a freshly loaded model would sit in whatever
+        # mode it happened to be saved in (typically .eval(), since
+        # save() is normally called between updates, but this makes
+        # it unconditional rather than relying on that convention).
+        self.model.eval()
+
     # ==========================================================
     # PPO UPDATE
     # ==========================================================
@@ -1515,7 +1582,20 @@ class MAPPO:
         ``received_messages`` is deliberately NOT used as the
         differentiable source when ``communication_source_obs``
         exists.
+
+        Communication credit assignment: see module docstring. The
+        communication advantage for each (sender, receiver) pair is
+        re-weighted by that receiver's trust in that sender
+        (``mb_trust_weights``) before being used in
+        ``comm_surrogate1/2`` below, so a receiver's advantage doesn't
+        reinforce every incoming sender equally.
         """
+
+        # Caller is responsible for switching to .train() before
+        # calling update() and back to .eval() after (see train.py) --
+        # this method does not toggle mode itself, since it may be
+        # called multiple times / minibatches per "update" and the
+        # mode should stay stable for the whole call.
 
         batch = buffer.get_batches()
 
@@ -2109,6 +2189,13 @@ class MAPPO:
                 # policy-gradient-updated using this row's advantage
                 # either.
                 #
+                # This is a HARD validity mask only -- it decides
+                # which rows are real samples for averaging purposes
+                # (comm_valid_count below). Per-sender CREDIT
+                # (how much of this row's advantage each sender
+                # should get) is a separate, soft weighting applied
+                # afterward -- see credit_weight.
+                #
                 # mb_agent_ids: [B]        -> this row's receiver id
                 # comm_surrogate*: [B, N]  -> N = sender dim
                 # --------------------------------------------------
@@ -2138,13 +2225,50 @@ class MAPPO:
 
                 comm_valid_count = comm_mask.sum().clamp(min=1.0)
 
+                # --------------------------------------------------
+                # Per-(sender, receiver) credit weight.
+                #
+                # Without this, every sender a receiver heard from
+                # gets the SAME receiver-level advantage, so a
+                # positive outcome reinforces A->B, C->B, D->B
+                # identically even if only one of them actually
+                # helped. mb_trust_weights[b, sender] is receiver b's
+                # own current trust in that sender (already
+                # per-sender-per-receiver -- see communication/
+                # trust.py and the receiver-relevance fix in
+                # evaluator.py/train.py), reused here as a soft
+                # contribution weight on the advantage magnitude.
+                # It does NOT change comm_valid_count above, so
+                # low-trust senders are still trained on every valid
+                # row, just with a smaller gradient contribution
+                # rather than being excluded. Falls back to uniform
+                # (the previous behavior) if no trust signal is
+                # available this run.
+                # --------------------------------------------------
+
+                if mb_trust_weights is not None:
+
+                    credit_weight = mb_trust_weights.to(
+                        dtype=comm_surrogate1.dtype
+                    ).clamp(0.0, 1.0)
+
+                else:
+
+                    credit_weight = torch.ones_like(
+                        comm_surrogate1
+                    )
+
+                weighted_comm_mask = (
+                    comm_mask * credit_weight
+                )
+
                 communication_actor_loss = (
                     -(
                         torch.min(
                             comm_surrogate1,
                             comm_surrogate2,
                         )
-                        * comm_mask
+                        * weighted_comm_mask
                     ).sum()
                     / comm_valid_count
                 )
@@ -2238,6 +2362,13 @@ class MAPPO:
 
                 # ==================================================
                 # Entropy
+                #
+                # Deliberately uses the HARD comm_mask, not
+                # weighted_comm_mask: exploration is what a
+                # currently-low-trust sender needs in order to earn
+                # trust, so down-weighting its entropy bonus the same
+                # way as its policy-gradient credit would be
+                # self-defeating.
                 # ==================================================
 
                 comm_entropy_mask = comm_mask.to(

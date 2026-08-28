@@ -145,19 +145,42 @@ means "no subnet-subnet edges at all" (fully isolated subnets)
 rather than the old fully-connected fallback, since a fully-connected
 default silently misrepresents the real topology.
 
+Host-level padding
+--------------------
+Every active subnet slot always has MAX_HOSTS (=16) host nodes, but
+CC4 randomizes 1-6 servers / 3-10 users per zone at reset, so most
+episodes have fewer than MAX_HOSTS real hosts in a given subnet --
+the remaining slots are padding, exactly like the padding subnet
+slots above. Unlike subnet identity, though, this is NOT recoverable
+from the observation vector: BlueFlatWrapper ANDs "host exists" and
+"host currently has an alert" into a single bit before it's written,
+so an absent host and a present-but-quiet host are bit-for-bit
+identical (both read 0) at any given timestep. `SharedActor` accepts
+an optional `host_active_mask` ([B, NUM_HQ_SUBNETS, MAX_HOSTS] bool)
+through `forward`/`get_local_hidden`/`get_outgoing_message`/`act` for
+exactly this -- when supplied, per-host padding is isolated the same
+way per-subnet padding is (adjacency edges zeroed, node_active
+excludes it from attention and from `local_projection`'s input). It
+defaults to None, which treats every host slot in an active subnet
+as real -- the same assumption every call site already made before
+this parameter existed. That default is NOT a fix by itself: closing
+this gap for real requires a caller to source the true per-episode
+host count from the environment (fixed at reset, not observation-
+derivable) and pass it in. That plumbing lives outside this file.
+
 IMPORTANT
 ---------
-The external interface is intentionally unchanged.
+The model's PRE-EXISTING interface (observation / received_messages
+/ trust_weights / return_communication) and all output shapes are
+unchanged. `host_active_mask` above is a genuinely NEW, optional
+keyword argument, added specifically to make per-host padding
+isolation possible -- every existing call site keeps working
+unchanged (it defaults to None), but actually protecting against
+fake host nodes requires updating the caller to supply it, sourced
+from the environment. That is the one exception to the "no changes
+required elsewhere" claim below; everything else still holds:
 
-The model still accepts:
-
-    observation
-    received_messages
-    trust_weights
-
-and still returns the same outputs, with the same shapes.
-
-No changes are required in:
+No other changes are required in:
 
     mappo.py
     buffer.py
@@ -752,6 +775,7 @@ class SharedActor(nn.Module):
     def _build_batch_adjacency(
         self,
         subnet_one_hot: torch.Tensor,
+        host_active_mask: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Combine the fixed mission/subnet/host skeleton with
@@ -766,6 +790,33 @@ class SharedActor(nn.Module):
                 A slot whose one-hot sums to 0 is padding (no real
                 subnet occupies it in this observation).
 
+            host_active_mask: optional [B, NUM_HQ_SUBNETS, MAX_HOSTS]
+                bool. True = this host slot is a real host THIS
+                EPISODE, within a subnet slot that is itself real
+                (ignored for slots `subnet_one_hot` already marks as
+                padding). CC4 randomizes 1-6 servers / 3-10 users per
+                zone at reset, fixed for the episode, but that count
+                is NOT recoverable from the observation vector: per
+                BlueFlatWrapper.observation_change,
+                `process_subvector`/`connection_subvector` are built
+                as `h in state.hosts and has_alert(h)` -- host
+                existence and "has an active alert" are ANDed into a
+                single bit before the flat vector is built, so an
+                absent host and a present-but-currently-quiet host
+                are bit-for-bit identical (both read 0) at any single
+                timestep. This mask therefore cannot be derived
+                in here; it must come from the caller, sourced from
+                the environment's per-episode host layout. If None
+                (the default -- every existing call site still omits
+                it), every host slot in an active subnet is treated
+                as real, i.e. the behavior before this parameter
+                existed. That is a real gap, not a fix, until a
+                caller supplies the true mask -- but it is a
+                deliberately inert default: it never fabricates a
+                presence signal from the alert bits, which would
+                silently mask out (delete) real, currently-quiet
+                hosts rather than genuine padding.
+
         Returns:
             adjacency:   [B, N, N] row-normalized adjacency, ready
                          for GraphMessagePassing.
@@ -777,6 +828,18 @@ class SharedActor(nn.Module):
 
         batch_size, num_slots, _ = subnet_one_hot.shape
         device = subnet_one_hot.device
+
+        if host_active_mask is not None:
+            expected_shape = (batch_size, num_slots, MAX_HOSTS)
+            if tuple(host_active_mask.shape) != expected_shape:
+                raise ValueError(
+                    f"host_active_mask must have shape {expected_shape} "
+                    f"(B, NUM_HQ_SUBNETS, MAX_HOSTS), got "
+                    f"{tuple(host_active_mask.shape)}."
+                )
+            host_active_mask = host_active_mask.to(
+                device=device, dtype=torch.bool
+            )
 
         # Which slots hold a real subnet this step, and which real
         # subnet (by index into SUBNET_NAME_ORDER) each active slot
@@ -815,11 +878,22 @@ class SharedActor(nn.Module):
         for s in range(num_slots):
             h0 = host_start + s * MAX_HOSTS
             h1 = h0 + MAX_HOSTS
-            node_active[:, h0:h1] = slot_active[:, s : s + 1]
+
+            if host_active_mask is not None:
+                # A host node is only active if its subnet slot is
+                # real AND this specific host slot is a real host
+                # within it -- the fake/padded-host fix.
+                node_active[:, h0:h1] = (
+                    slot_active[:, s : s + 1] & host_active_mask[:, s, :]
+                )
+            else:
+                node_active[:, h0:h1] = slot_active[:, s : s + 1]
 
         # Zero every edge touching a padding node -- no mission<->
         # padding, no padding<->padding subnet edges, no host<->
-        # padding, in either direction.
+        # padding (whether the whole subnet slot is padding, or just
+        # this specific host slot within a real subnet), in either
+        # direction.
         edge_active = node_active.unsqueeze(2) & node_active.unsqueeze(1)
         adjacency = adjacency * edge_active.to(adjacency.dtype)
 
@@ -866,10 +940,19 @@ class SharedActor(nn.Module):
     # Entity encoding
     # ======================================================
 
-    def _encode_entities(self, observation: torch.Tensor):
+    def _encode_entities(
+        self,
+        observation: torch.Tensor,
+        host_active_mask: Optional[torch.Tensor] = None,
+    ):
         """
         Flat observation -> hierarchical graph -> GNN -> attention
         -> pooled entity tokens (mission + subnets).
+
+        host_active_mask: see `_build_batch_adjacency` -- optional
+        per-host validity, defaults to "every host slot in an active
+        subnet is real" when not supplied. Unused in the
+        `not self.use_host_graph` branch (no host nodes exist there).
         """
 
         mission, subnets, _messages = self._split_entities(
@@ -973,7 +1056,9 @@ class SharedActor(nn.Module):
         # Per-sample subnet graph: real topology + padding isolation
         # --------------------------------------------------
 
-        adjacency, node_active = self._build_batch_adjacency(subnet_one_hot)
+        adjacency, node_active = self._build_batch_adjacency(
+            subnet_one_hot, host_active_mask=host_active_mask
+        )
 
         # --------------------------------------------------
         # Hierarchical GNN message passing
@@ -1034,9 +1119,15 @@ class SharedActor(nn.Module):
     # Local hidden representation
     # ======================================================
 
-    def _get_local_hidden(self, observation: torch.Tensor):
+    def _get_local_hidden(
+        self,
+        observation: torch.Tensor,
+        host_active_mask: Optional[torch.Tensor] = None,
+    ):
 
-        x = self._encode_entities(observation)
+        x = self._encode_entities(
+            observation, host_active_mask=host_active_mask
+        )
 
         batch_size = x.shape[0]
         flat = x.reshape(batch_size, -1)
@@ -1175,6 +1266,7 @@ class SharedActor(nn.Module):
         received_messages: Optional[torch.Tensor] = None,
         trust_weights: Optional[torch.Tensor] = None,
         return_communication: bool = False,
+        host_active_mask: Optional[torch.Tensor] = None,
     ):
 
         squeeze_output = observation.dim() == 1
@@ -1182,7 +1274,9 @@ class SharedActor(nn.Module):
         if squeeze_output:
             observation = observation.unsqueeze(0)
 
-        local_hidden = self._get_local_hidden(observation)
+        local_hidden = self._get_local_hidden(
+            observation, host_active_mask=host_active_mask
+        )
 
         # Only sample/encode an outgoing message when the caller
         # actually wants it (return_communication=True). Plain policy
@@ -1234,14 +1328,20 @@ class SharedActor(nn.Module):
     # Communication-only forward (unchanged)
     # ======================================================
 
-    def get_outgoing_message(self, observation: torch.Tensor):
+    def get_outgoing_message(
+        self,
+        observation: torch.Tensor,
+        host_active_mask: Optional[torch.Tensor] = None,
+    ):
 
         squeeze_output = observation.dim() == 1
 
         if squeeze_output:
             observation = observation.unsqueeze(0)
 
-        local_hidden = self._get_local_hidden(observation)
+        local_hidden = self._get_local_hidden(
+            observation, host_active_mask=host_active_mask
+        )
 
         (
             field_ids,
@@ -1262,14 +1362,20 @@ class SharedActor(nn.Module):
     # Local hidden (unchanged)
     # ======================================================
 
-    def get_local_hidden(self, observation: torch.Tensor):
+    def get_local_hidden(
+        self,
+        observation: torch.Tensor,
+        host_active_mask: Optional[torch.Tensor] = None,
+    ):
 
         squeeze_output = observation.dim() == 1
 
         if squeeze_output:
             observation = observation.unsqueeze(0)
 
-        hidden = self._get_local_hidden(observation)
+        hidden = self._get_local_hidden(
+            observation, host_active_mask=host_active_mask
+        )
 
         if squeeze_output:
             hidden = hidden.squeeze(0)
@@ -1379,6 +1485,7 @@ class MAPPOModel(nn.Module):
         received_messages: Optional[torch.Tensor] = None,
         trust_weights: Optional[torch.Tensor] = None,
         return_communication: bool = False,
+        host_active_mask: Optional[torch.Tensor] = None,
     ):
 
         return self.actor(
@@ -1386,6 +1493,7 @@ class MAPPOModel(nn.Module):
             received_messages=received_messages,
             trust_weights=trust_weights,
             return_communication=return_communication,
+            host_active_mask=host_active_mask,
         )
 
     def evaluate(self, global_state: torch.Tensor):
