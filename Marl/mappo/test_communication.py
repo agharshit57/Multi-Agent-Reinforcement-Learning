@@ -140,9 +140,23 @@ TOP_K_ACTIONS = 5
 # Checkpoint helpers
 # ============================================================================
 
-def get_checkpoint_num_targets(checkpoint_path: str) -> int:
+def get_checkpoint_num_targets(checkpoint_path: str):
     """
-    Read the communication target vocabulary directly from the checkpoint.
+    Read the communication target vocabulary sizes directly from the
+    checkpoint.
+
+    HOST and SUBNET are separate, independently-sized vocabularies
+    (see mappo.py's module docstring) -- there is no longer a single
+    combined "num_targets". MAPPO.save() persists both directly on the
+    checkpoint dict as "num_host_targets" / "num_subnet_targets", so
+    this reads those keys rather than inferring a shape from a single
+    target_head weight, which no longer exists as one tensor (the
+    decoder now has separate host_target_head/subnet_target_head).
+
+    Returns
+    -------
+    (int, int or None)
+        (num_host_targets, num_subnet_targets).
     """
 
     checkpoint = torch.load(checkpoint_path, map_location="cpu")
@@ -153,32 +167,30 @@ def get_checkpoint_num_targets(checkpoint_path: str) -> int:
             f"got {type(checkpoint).__name__}."
         )
 
-    model_state = checkpoint.get("model")
-
-    if model_state is None:
+    if "model" not in checkpoint:
         raise RuntimeError("Checkpoint does not contain a 'model' state_dict.")
 
-    target_weight = model_state.get(
-        "actor.communication.decoder.target_head.weight"
-    )
+    num_host_targets = checkpoint.get("num_host_targets")
+    num_subnet_targets = checkpoint.get("num_subnet_targets")
 
-    if target_weight is None:
+    if num_host_targets is None:
         raise RuntimeError(
-            "Checkpoint does not contain "
-            "'actor.communication.decoder.target_head.weight'."
+            "Checkpoint does not contain 'num_host_targets'. This "
+            "checkpoint predates the host/subnet target split and "
+            "cannot be loaded by this script."
         )
 
-    if target_weight.ndim != 2:
+    if num_host_targets <= 0:
         raise RuntimeError(
-            f"Unexpected target_head.weight shape: {tuple(target_weight.shape)}"
+            f"Invalid checkpoint num_host_targets: {num_host_targets}"
         )
 
-    num_targets = int(target_weight.shape[0])
+    if num_subnet_targets is not None and num_subnet_targets <= 0:
+        raise RuntimeError(
+            f"Invalid checkpoint num_subnet_targets: {num_subnet_targets}"
+        )
 
-    if num_targets <= 0:
-        raise RuntimeError(f"Invalid checkpoint target count: {num_targets}")
-
-    return num_targets
+    return num_host_targets, num_subnet_targets
 
 
 def load_trained_mappo(checkpoint_path: str):
@@ -191,16 +203,22 @@ def load_trained_mappo(checkpoint_path: str):
     if not os.path.isfile(checkpoint_path):
         raise FileNotFoundError(f"Checkpoint not found:\n{checkpoint_path}")
 
-    num_targets = get_checkpoint_num_targets(checkpoint_path)
+    num_host_targets, num_subnet_targets = get_checkpoint_num_targets(
+        checkpoint_path
+    )
 
     print()
     print("=" * 72)
     print("LOADING TRAINED MODEL")
     print("=" * 72)
-    print(f"Checkpoint : {checkpoint_path}")
-    print(f"Targets    : {num_targets}")
+    print(f"Checkpoint    : {checkpoint_path}")
+    print(f"Host targets  : {num_host_targets}")
+    print(f"Subnet targets: {num_subnet_targets}")
 
-    ppo = MAPPO(num_targets=num_targets)
+    ppo = MAPPO(
+        num_host_targets=num_host_targets,
+        num_subnet_targets=num_subnet_targets,
+    )
 
     checkpoint = torch.load(checkpoint_path, map_location=ppo.device)
 
@@ -255,7 +273,7 @@ def load_trained_mappo(checkpoint_path: str):
     print("Trust      : frozen for this test")
     print("=" * 72)
 
-    return ppo, num_targets
+    return ppo, num_host_targets, num_subnet_targets
 
 
 # ============================================================================
@@ -395,7 +413,11 @@ def choose_receivers(sender: int, num_agents: int) -> List[int]:
 
 
 def choose_target_id(num_targets: int) -> int:
-    """Select a target ID (host vocabulary only -- see schema.py)."""
+    """
+    Select a target ID within the given vocabulary. HOST and SUBNET
+    are separate, independently-sized vocabularies (see schema.py) --
+    the caller picks which count to pass based on target_type.
+    """
 
     print()
     print("Target ID")
@@ -416,7 +438,10 @@ def choose_target_id(num_targets: int) -> int:
         print(f"Target ID must be between 0 and {num_targets - 1}.")
 
 
-def build_manual_message(num_targets: int) -> StructuredMessage:
+def build_manual_message(
+    num_host_targets: int,
+    num_subnet_targets: int,
+) -> StructuredMessage:
     """Ask the user for all seven schema fields -- this IS the input."""
 
     print()
@@ -429,8 +454,16 @@ def build_manual_message(num_targets: int) -> StructuredMessage:
 
     if target_type == TargetType.NONE:
         target_id = 0
+    elif target_type == TargetType.SUBNET:
+        if num_subnet_targets is None:
+            raise RuntimeError(
+                "This checkpoint was not trained with a SUBNET "
+                "target vocabulary (num_subnet_targets is None), "
+                "so a SUBNET target cannot be selected."
+            )
+        target_id = choose_target_id(num_subnet_targets)
     else:
-        target_id = choose_target_id(num_targets)
+        target_id = choose_target_id(num_host_targets)
 
     threat_level = choose_from_enum(ThreatLevel, "Threat Level")
     confidence_level = choose_from_enum(ConfidenceLevel, "Confidence")
@@ -761,11 +794,21 @@ def main() -> None:
     print("docstring for the exact traced path and its limits.")
     print("=" * 72)
 
-    ppo, num_targets = load_trained_mappo(CHECKPOINT_PATH)
+    ppo, num_host_targets, num_subnet_targets = load_trained_mappo(
+        CHECKPOINT_PATH
+    )
 
     print()
-    print(f"Agents     : {NUM_AGENTS}")
-    print(f"Target IDs : 0 - {num_targets - 1}")
+    print(f"Agents           : {NUM_AGENTS}")
+    print(f"Host target IDs  : 0 - {num_host_targets - 1}")
+    print(
+        "Subnet target IDs: "
+        + (
+            f"0 - {num_subnet_targets - 1}"
+            if num_subnet_targets is not None
+            else "not available in this checkpoint"
+        )
+    )
 
     # ------------------------------------------------------------------
     # Real receiver observations
@@ -796,7 +839,7 @@ def main() -> None:
 
     sender = choose_agent(NUM_AGENTS, "Sender")
     receivers = choose_receivers(sender, NUM_AGENTS)
-    message = build_manual_message(num_targets)
+    message = build_manual_message(num_host_targets, num_subnet_targets)
 
     print_manual_input(sender, receivers, message)
 

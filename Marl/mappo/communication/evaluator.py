@@ -1,5 +1,5 @@
 """
-evaluator.py
+evaluator.py (v2 -- minimal scope: single target_id, dual ground-truth maps)
 
 Message quality evaluator for structured communication in CC4 MARL.
 
@@ -37,6 +37,26 @@ IMPORTANT
 ---------
 The ground-truth state used here is training/evaluation-side information.
 It must NOT be provided to the Blue agents as part of their observation.
+
+HOST vs SUBNET targets -- separate vocabularies, both gradable
+-------------------------------------------------------------
+`target_id` is ONE field on StructuredMessage (the message format is not
+changed by this fix -- see schema.py's 7-field MESSAGE_FIELDS), but its
+MEANING depends on `target_type`: HOST indexes the host vocabulary,
+SUBNET indexes a SEPARATE subnet vocabulary. Ground truth mirrors that
+split with two independent maps -- `target_status` (HOST) and
+`subnet_status` (SUBNET) -- expected from CC4Env.get_ground_truth(). A
+HOST claim is looked up ONLY in `target_status`; a SUBNET claim is looked
+up ONLY in `subnet_status`. Neither is ever consulted for the other
+target_type, and a claim is never re-pointed at a different, real target
+just because the one actually named was wrong -- an id absent from (or
+out of range for) the relevant map scores as incorrect, full stop.
+
+Only when a caller passes ground truth from an OLDER CC4Env that has no
+"subnet_status" key AT ALL (as opposed to a present-but-empty dict) does
+a SUBNET claim fall back to being excluded from the score entirely
+(weights renormalized over the remaining components) rather than
+fabricating a verdict it has no evidence for.
 
 Receiver-specific trust
 ------------------------
@@ -101,7 +121,11 @@ class MessageEvaluation:
         Correctness of the reported event.
 
     target_score:
-        Correctness of the reported target.
+        Correctness of the reported target (HOST checked against
+        target_status, SUBNET checked against subnet_status -- see
+        module docstring). None when the claim could not be graded at
+        all (only possible with ground truth from an older CC4Env
+        lacking "subnet_status").
 
     threat_score:
         Correctness of the reported threat level.
@@ -112,6 +136,7 @@ class MessageEvaluation:
     usefulness_score:
         Whether the information was operationally useful -- receiver-
         dependent (see module docstring), unlike the four scores above.
+        None under the same ungraded condition as target_score.
 
     confidence:
         Confidence declared by the sender.
@@ -123,10 +148,10 @@ class MessageEvaluation:
     overall_score: float
 
     event_score: float
-    target_score: float
+    target_score: Optional[float]
     threat_score: float
     status_score: float
-    usefulness_score: float
+    usefulness_score: Optional[float]
 
     confidence: float
 
@@ -239,7 +264,9 @@ class MessageEvaluator:
         Parameters
         ----------
         message:
-            Structured message sent by a Blue agent.
+            Structured message sent by a Blue agent. `target_id` is a
+            single field (unchanged message format); its vocabulary is
+            selected by `target_type` -- see module docstring.
 
         ground_truth:
             Zone truth produced by CC4Env.get_ground_truth(sender_id).
@@ -250,20 +277,37 @@ class MessageEvaluator:
 
                 {
                     "target_status": {
-                        target_id (int): {
+                        target_id (int, HOST vocabulary): {
                             "event_type":   EventType,
                             "threat_level": ThreatLevel,
                             "status":       HostStatus,
                         },
                         ...   # one entry per relevant host in the zone
                     },
+                    "subnet_status": {
+                        target_id (int, SUBNET vocabulary): {
+                            "event_type":   EventType,
+                            "threat_level": ThreatLevel,
+                            "status":       HostStatus,
+                        },
+                        ...   # one entry per relevant subnet in the zone
+                    },
                     "zone_quiet": bool,
                 }
 
+            "subnet_status" is optional for backward compatibility with
+            an older CC4Env that only ever produced "target_status" --
+            when it is entirely absent (not merely empty), a SUBNET
+            claim is excluded from the score rather than graded. When
+            it IS present, a SUBNET claim is graded exactly like a HOST
+            claim: looked up directly in `subnet_status`, never
+            re-pointed at a different target.
+
             Because the target the agent named is looked up directly in
-            `target_status`, a claim about the WRONG host is never
-            silently re-pointed at a different real host: the wrong host
-            is simply absent from `target_status` and scores as incorrect.
+            the relevant map, a claim about the WRONG host/subnet is
+            never silently re-pointed at a different real one: the
+            wrong (or out-of-range) target is simply absent and scores
+            as incorrect.
 
             This is the SENDER's zone truth regardless of who receives
             the message -- correctness does not depend on the receiver.
@@ -311,6 +355,15 @@ class MessageEvaluator:
         if not isinstance(target_status, dict):
             target_status = {}
 
+        # Optional (backward-compat): None means an older CC4Env that
+        # never produced this map at all, as opposed to a present-but-
+        # empty map meaning "no relevant subnets right now". Only the
+        # former falls back to leaving SUBNET claims ungraded.
+        subnet_status = ground_truth.get("subnet_status")
+
+        if subnet_status is not None and not isinstance(subnet_status, dict):
+            subnet_status = {}
+
         zone_quiet = ground_truth.get(
             "zone_quiet",
             len(target_status) == 0,
@@ -318,36 +371,46 @@ class MessageEvaluator:
 
         # Decide -- message-independently -- whether the target the agent
         # named was correct. Tri-state:
-        #   True  -> named a genuinely relevant host, or correctly reported
-        #            a quiet zone
-        #   False -> named a wrong/uninvolved host, or stayed silent while
-        #            something was actually happening
-        #   None  -> ungraded (SUBNET claim): host-level truth cannot verify
-        #            a subnet-scoped claim, so the target is EXCLUDED from
-        #            the score (its weight is renormalized away) rather than
+        #   True  -> named a genuinely relevant host/subnet, or correctly
+        #            reported a quiet zone
+        #   False -> named a wrong, out-of-range, or uninvolved
+        #            host/subnet, or stayed silent while something was
+        #            actually happening
+        #   None  -> ungraded: only possible for a SUBNET claim when the
+        #            caller's ground truth has no "subnet_status" map at
+        #            all (older CC4Env); the target is EXCLUDED from the
+        #            score (its weight is renormalized away) rather than
         #            being assigned a neutral 0.5.
+        #
+        # TargetType.NONE never performs a target_id lookup at all (there
+        # is no specific target to look up) -- it is graded purely on
+        # whether the zone really was quiet, independent of target_id's
+        # value.
         #
         # This is receiver-independent: it's a fact about the message and
         # the sender's zone, not about who's listening.
         target_correct = self._evaluate_target(
             message,
             target_status,
+            subnet_status,
             zone_quiet,
         )
 
         # Reference fact (event_type / threat_level / status) that the
         # preserved event/threat/status sub-evaluators grade against. This
         # never lets the message rewrite the truth; it only selects WHICH
-        # real host (or the quiet baseline) the claim is checked against.
+        # real host/subnet (or the quiet baseline) the claim is checked
+        # against.
         reference_fact = self._resolve_reference_fact(
             message,
             target_status,
+            subnet_status,
             zone_quiet,
         )
 
         # Event / threat / status partial scoring is preserved unchanged and
-        # is always graded -- even for a SUBNET claim, whose event/threat/
-        # status can still be checked against the zone. Also
+        # is always graded -- even when the target itself is ungraded, its
+        # event/threat/status can still be checked against the zone. Also
         # receiver-independent, for the same reason as target_correct.
         event_score = self._evaluate_event(
             message,
@@ -365,7 +428,8 @@ class MessageEvaluator:
         )
 
         # Target correctness maps to a score, or is EXCLUDED (None) when the
-        # claim is ungraded (SUBNET). Receiver-independent.
+        # claim is ungraded (SUBNET with no subnet_status map available).
+        # Receiver-independent.
         if target_correct is None:
             target_score = None
         else:
@@ -389,8 +453,8 @@ class MessageEvaluator:
 
         # Weighted sum over ONLY the graded components. Any excluded
         # component (score is None) is dropped and its weight renormalized
-        # away, so a SUBNET claim is scored over event + threat + status
-        # rather than being handed a neutral target_score of 0.5.
+        # away, so an ungraded SUBNET claim is scored over event + threat +
+        # status rather than being handed a neutral target_score of 0.5.
         weighted_components = (
             (event_score, self.event_weight),
             (target_score, self.target_weight),
@@ -537,42 +601,64 @@ class MessageEvaluator:
         self,
         message: StructuredMessage,
         target_status: Dict[int, Dict[str, Any]],
+        subnet_status: Optional[Dict[int, Dict[str, Any]]],
         zone_quiet: bool,
     ) -> Optional[bool]:
         """
         Decide whether the target the message named was correct, purely by
-        looking the claim up in the message-independent zone truth. The
-        message never rewrites the truth: a wrong host is simply absent from
-        ``target_status`` and is scored as incorrect -- it is never silently
-        re-pointed at a different, genuinely-compromised host (the old
-        wrong-target rescue bug).
+        looking `message.target_id` up in the message-independent map that
+        `message.target_type` selects. The message never rewrites the
+        truth: a wrong or out-of-range id is simply absent from the
+        relevant map and is scored as incorrect -- it is never silently
+        re-pointed at a different, genuinely-compromised target (the old
+        wrong-target rescue bug), and it is never checked against the
+        WRONG map (a SUBNET claim is never looked up in target_status, a
+        HOST claim never in subnet_status).
 
             HOST + target_id present in target_status -> True
                 (named a genuinely relevant host)
 
             HOST + target_id absent from target_status -> False
-                (named a normal / uninvolved host: wrong target)
+                (named a normal, uninvolved, or out-of-range host: wrong
+                target)
 
-            NONE + zone_quiet -> True
-                (correctly reported that nothing was happening)
+            SUBNET, subnet_status available (not None)
+                + target_id present in subnet_status -> True
+                (named a genuinely relevant subnet)
 
-            NONE + not zone_quiet -> False
-                (stayed silent while something was actually happening)
+            SUBNET, subnet_status available (not None)
+                + target_id absent from subnet_status -> False
+                (named a normal, uninvolved, or out-of-range subnet:
+                wrong target)
 
-            SUBNET -> None
-                (ungraded: ground truth is host-level, so a subnet-scoped
-                claim cannot be verified; the caller EXCLUDES it from the
-                score and renormalizes the remaining weights)
+            SUBNET, subnet_status is None (older CC4Env) -> None
+                (ungraded: no subnet-level ground truth is available at
+                all, so the caller EXCLUDES it from the score and
+                renormalizes the remaining weights -- this is a
+                fallback for backward compatibility only; a current
+                CC4Env always supplies subnet_status)
+
+            NONE -> True iff zone_quiet, else False
+                (no target_id lookup is performed at all for a NONE
+                claim -- it is graded purely on whether the zone really
+                was quiet)
         """
 
         if message.target_type == TargetType.HOST:
             return message.target_id in target_status
 
         if message.target_type == TargetType.SUBNET:
-            return None
 
-        # TargetType.NONE: no specific host was named. Correct precisely when
-        # the zone really was quiet.
+            if subnet_status is None:
+                # No subnet-level ground truth available at all --
+                # leave ungraded rather than guessing.
+                return None
+
+            return message.target_id in subnet_status
+
+        # TargetType.NONE: no specific host/subnet was named, so no
+        # target_id lookup happens at all -- correct precisely when the
+        # zone really was quiet.
         return bool(zone_quiet)
 
     # ------------------------------------------------------------------
@@ -583,28 +669,45 @@ class MessageEvaluator:
         self,
         message: StructuredMessage,
         target_status: Dict[int, Dict[str, Any]],
+        subnet_status: Optional[Dict[int, Dict[str, Any]]],
         zone_quiet: bool,
     ) -> Dict[str, Any]:
         """
         Pick the reference fact (event_type / threat_level / status) that the
         preserved event/threat/status sub-evaluators grade the message
         against. This NEVER lets the message rewrite the truth -- it only
-        selects WHICH real host (or the quiet baseline) the field-level
-        claims are checked against:
+        selects WHICH real host/subnet (or the quiet baseline) the
+        field-level claims are checked against:
 
-            HOST present  -> that host's real fact.
-            HOST absent   -> NORMAL / NONE baseline (uninvolved host).
-            NONE / SUBNET, zone quiet     -> NORMAL / NONE baseline.
-            NONE / SUBNET, zone not quiet -> the most severe real host in the
-                                             zone, so a broad-but-directionally
-                                             correct alert still earns partial
-                                             event/threat/status credit.
+            HOST present    -> that host's real fact (from target_status).
+            HOST absent     -> NORMAL / NONE baseline (uninvolved host).
+
+            SUBNET present (subnet_status available and target_id in it)
+                            -> that subnet's real aggregate fact (from
+                               subnet_status).
+            SUBNET absent, subnet_status available
+                            -> NORMAL / NONE baseline (uninvolved subnet).
+            SUBNET, subnet_status is None (older CC4Env)
+                            -> falls back to the zone-wide "most severe
+                               real host" heuristic below, same as a
+                               NONE claim, since no subnet-specific
+                               truth exists to check against.
+
+            NONE, zone quiet                -> NORMAL / NONE baseline.
+            NONE, zone not quiet            -> the most severe real host
+                                                in the zone (from
+                                                target_status), so a
+                                                broad-but-directionally-
+                                                correct alert still earns
+                                                partial event/threat/
+                                                status credit.
 
         Whether the *target itself* was correct is decided separately in
         _evaluate_target(); this method only supplies the field-level truth.
-        A host that is not genuinely relevant is absent from `target_status`,
-        so a HOST claim about it is graded against the NORMAL / NONE fact --
-        never re-pointed at a different, genuinely-compromised host.
+        A host/subnet that is not genuinely relevant is absent from the
+        relevant map, so a claim about it is graded against the NORMAL /
+        NONE fact -- never re-pointed at a different, genuinely-compromised
+        target, and never cross-checked against the WRONG map.
         """
 
         normal_fact = {
@@ -615,6 +718,7 @@ class MessageEvaluator:
 
         # A specific host was named: grade against that exact host when it is
         # genuinely relevant, otherwise against the NORMAL / NONE baseline.
+        # Only ever consults target_status -- never subnet_status.
         if message.target_type == TargetType.HOST:
 
             fact = target_status.get(message.target_id)
@@ -624,7 +728,22 @@ class MessageEvaluator:
 
             return dict(normal_fact)
 
-        # No specific host (NONE) or a subnet-scoped claim (SUBNET): a quiet
+        # A specific subnet was named, and real subnet-level ground truth
+        # exists: grade against that exact subnet when it is genuinely
+        # relevant, otherwise against the NORMAL / NONE baseline -- the
+        # same treatment HOST claims get. Only ever consults
+        # subnet_status -- never target_status.
+        if message.target_type == TargetType.SUBNET and subnet_status is not None:
+
+            fact = subnet_status.get(message.target_id)
+
+            if fact is not None:
+                return dict(fact)
+
+            return dict(normal_fact)
+
+        # No specific host (NONE), or a subnet-scoped claim with no
+        # subnet-level ground truth available (older CC4Env): a quiet
         # zone grades against the NORMAL / NONE baseline; otherwise the
         # field-level claims are checked against the most severe real host.
         if zone_quiet or not target_status:
@@ -868,3 +987,129 @@ class MessageEvaluator:
             ValueError,
         ):
             return None
+
+
+# ============================================================================
+# Basic validation / self-test
+# ============================================================================
+
+def _run_self_test() -> None:
+    """
+    Minimal smoke test covering both target types plus invalid ids and
+    NONE. Run directly: `python -m Marl.mappo.communication.evaluator`.
+    Not a substitute for a real test suite -- just enough to catch a
+    regression of the wrong-target rescue bug or a HOST/SUBNET map
+    cross-check mistake.
+    """
+
+    evaluator = MessageEvaluator()
+
+    host_ground_truth = {
+        "target_status": {
+            3: {
+                "event_type": EventType.COMPROMISE,
+                "threat_level": ThreatLevel.HIGH,
+                "status": HostStatus.COMPROMISED,
+            },
+        },
+        "subnet_status": {
+            1: {
+                "event_type": EventType.SUSPICIOUS_ACTIVITY,
+                "threat_level": ThreatLevel.MEDIUM,
+                "status": HostStatus.SUSPICIOUS,
+            },
+        },
+        "zone_quiet": False,
+    }
+
+    # 1. Correct HOST claim scores target_score == 1.0.
+    correct_host_message = StructuredMessage(
+        event_type=EventType.COMPROMISE,
+        target_type=TargetType.HOST,
+        target_id=3,
+        threat_level=ThreatLevel.HIGH,
+        confidence=0.9,
+        status=HostStatus.COMPROMISED,
+        priority=Priority.URGENT,
+    )
+    result = evaluator.evaluate(correct_host_message, host_ground_truth)
+    assert result.target_score == 1.0, "Correct HOST claim should score target_score=1.0"
+
+    # 2. Wrong HOST id must NOT be rescued onto the real compromised host,
+    # and must NOT be checked against subnet_status either.
+    wrong_host_message = StructuredMessage(
+        event_type=EventType.COMPROMISE,
+        target_type=TargetType.HOST,
+        target_id=99,  # not in target_status
+        threat_level=ThreatLevel.HIGH,
+        confidence=0.9,
+        status=HostStatus.COMPROMISED,
+        priority=Priority.URGENT,
+    )
+    result = evaluator.evaluate(wrong_host_message, host_ground_truth)
+    assert result.target_score == 0.0, "Wrong/out-of-range HOST id must score target_score=0.0"
+
+    # 3. Correct SUBNET claim scores target_score == 1.0, graded against
+    # subnet_status (never target_status).
+    correct_subnet_message = StructuredMessage(
+        event_type=EventType.SUSPICIOUS_ACTIVITY,
+        target_type=TargetType.SUBNET,
+        target_id=1,
+        threat_level=ThreatLevel.MEDIUM,
+        confidence=0.7,
+        status=HostStatus.SUSPICIOUS,
+        priority=Priority.HIGH,
+    )
+    result = evaluator.evaluate(correct_subnet_message, host_ground_truth)
+    assert result.target_score == 1.0, "Correct SUBNET claim should score target_score=1.0"
+
+    # 4. Wrong/out-of-range SUBNET id scores incorrect, not excluded (since
+    # subnet_status IS present here).
+    wrong_subnet_message = StructuredMessage(
+        event_type=EventType.SUSPICIOUS_ACTIVITY,
+        target_type=TargetType.SUBNET,
+        target_id=42,  # not in subnet_status
+        threat_level=ThreatLevel.MEDIUM,
+        confidence=0.7,
+        status=HostStatus.SUSPICIOUS,
+        priority=Priority.HIGH,
+    )
+    result = evaluator.evaluate(wrong_subnet_message, host_ground_truth)
+    assert result.target_score == 0.0, "Wrong/out-of-range SUBNET id must score target_score=0.0"
+
+    # 5. SUBNET claim with NO subnet_status map at all (older CC4Env) is
+    # excluded from scoring, not guessed at.
+    legacy_ground_truth = {
+        "target_status": host_ground_truth["target_status"],
+        "zone_quiet": False,
+        # no "subnet_status" key at all
+    }
+    result = evaluator.evaluate(correct_subnet_message, legacy_ground_truth)
+    assert result.target_score is None, "SUBNET claim with no subnet_status must be excluded (None)"
+    assert "target" in result.details["excluded_components"]
+
+    # 6. NONE claim never performs a target_id lookup -- correctness
+    # depends only on zone_quiet.
+    none_message_while_active = StructuredMessage(
+        event_type=EventType.NONE,
+        target_type=TargetType.NONE,
+        target_id=0,
+        threat_level=ThreatLevel.LOW,
+        confidence=0.5,
+        status=HostStatus.NORMAL,
+        priority=Priority.LOW,
+    )
+    result = evaluator.evaluate(none_message_while_active, host_ground_truth)
+    assert result.target_score == 0.0, "NONE claim while zone is active must score target_score=0.0"
+
+    quiet_ground_truth = {"target_status": {}, "subnet_status": {}, "zone_quiet": True}
+    result = evaluator.evaluate(none_message_while_active, quiet_ground_truth)
+    assert result.target_score == 1.0, "NONE claim while zone is quiet must score target_score=1.0"
+
+    print("evaluator.py self-test passed: HOST and SUBNET claims are graded "
+          "independently, invalid ids score incorrect (never rescued), and "
+          "NONE is graded purely on zone_quiet.")
+
+
+if __name__ == "__main__":
+    _run_self_test()

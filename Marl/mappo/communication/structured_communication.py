@@ -100,8 +100,15 @@ class StructuredCommunication(nn.Module):
     num_agents : int
         Number of Blue agents.
 
-    num_targets : int, optional
-        Number of possible host/subnet targets.
+    num_host_targets : int, optional
+        Number of possible HOST targets. See decoder.py /
+        encoder.py's module docstrings -- HOST and SUBNET are
+        separate, independently-sized vocabularies now; there is no
+        longer a single combined `num_targets`.
+
+    num_subnet_targets : int, optional
+        Number of possible SUBNET targets. Independent of
+        `num_host_targets` above.
 
     trust_decay : float
         Forgetting factor used by DynamicTrust.
@@ -125,7 +132,8 @@ class StructuredCommunication(nn.Module):
         encoder_embedding_dim: int = 16,
         encoder_hidden_dim: int = 128,
         num_agents: int = 5,
-        num_targets: Optional[int] = None,
+        num_host_targets: Optional[int] = None,
+        num_subnet_targets: Optional[int] = None,
         trust_decay: float = 0.995,
     ) -> None:
 
@@ -144,10 +152,14 @@ class StructuredCommunication(nn.Module):
             hidden_dim=decoder_hidden_dim,
         )
 
-        # Configure target vocabulary if available.
-        if num_targets is not None:
-            self.decoder.build_target_head(
-                num_targets
+        # Configure target vocabularies if available. HOST and SUBNET
+        # are independent -- either, both, or neither may be
+        # configured at construction time (see decoder.py's
+        # build_target_heads).
+        if num_host_targets is not None or num_subnet_targets is not None:
+            self.decoder.build_target_heads(
+                num_host_targets,
+                num_subnet_targets,
             )
 
         # ---------------------------------------------------------------
@@ -158,7 +170,8 @@ class StructuredCommunication(nn.Module):
             message_dim=message_dim,
             embedding_dim=encoder_embedding_dim,
             hidden_dim=encoder_hidden_dim,
-            num_targets=num_targets,
+            num_host_targets=num_host_targets,
+            num_subnet_targets=num_subnet_targets,
         )
 
         # ---------------------------------------------------------------

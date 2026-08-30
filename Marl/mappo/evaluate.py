@@ -126,38 +126,55 @@ RED_AGENTS = {
 
 def get_checkpoint_num_targets(checkpoint_path):
     """
-    Read the communication target vocabulary size directly from
-    the saved MAPPO model.
+    Read the communication target vocabulary sizes directly from the
+    saved MAPPO checkpoint.
 
-    The checkpoint is authoritative for model construction because
-    the decoder target_head and encoder target_embedding were created
-    with the target count that existed when the model was trained.
+    The checkpoint is authoritative for model construction because the
+    decoder's host_target_head/subnet_target_head and the encoder's
+    host/subnet target embeddings were created with the target counts
+    that existed when the model was trained.
+
+    HOST and SUBNET are separate, independently-sized vocabularies
+    (see mappo.py's module docstring and communication/decoder.py) --
+    there is no longer a single combined "num_targets". MAPPO.save()
+    persists both directly on the checkpoint dict as
+    "num_host_targets" / "num_subnet_targets" (see mappo.py.save()),
+    so this reads those keys rather than inferring a shape from a
+    single target_head weight, which no longer exists as one tensor.
 
     Current MAPPO checkpoints are saved as:
 
         {
             "model": model.state_dict(),
+            "num_host_targets": int,
+            "num_subnet_targets": int or None,
             ...
         }
 
     Returns
     -------
-    int or None
-        Number of communication targets stored in the checkpoint.
+    (int or None, int or None)
+        (num_host_targets, num_subnet_targets) stored in the
+        checkpoint. Both are None for older checkpoints saved before
+        this field existed -- the caller can fall back to the current
+        environment's counts in that case.
 
     Why this is needed
     ------------------
-    CC4Env.get_num_targets() can differ depending on the environment
-    instance/scenario used during evaluation. Constructing MAPPO from
-    the current environment's count can therefore produce, for example:
+    CC4Env.get_num_targets()/get_num_subnet_targets() can differ
+    depending on the environment instance/scenario used during
+    evaluation. Constructing MAPPO from the current environment's
+    counts can therefore produce, for example:
 
-        checkpoint: 94 targets
-        evaluation env: 95 targets
+        checkpoint: 94 host targets
+        evaluation env: 95 host targets
 
     which causes a state_dict size mismatch in:
 
-        actor.communication.decoder.target_head
-        actor.communication.encoder.target_embedding
+        actor.communication.decoder.host_target_head
+        actor.communication.decoder.subnet_target_head
+        actor.communication.encoder.host_target_embedding
+        actor.communication.encoder.subnet_target_embedding
     """
 
     checkpoint = torch.load(
@@ -171,40 +188,27 @@ def get_checkpoint_num_targets(checkpoint_path):
             f"but got {type(checkpoint).__name__}."
         )
 
-    model_state = checkpoint.get("model")
-
-    if model_state is None:
+    if "model" not in checkpoint:
         raise RuntimeError(
             "Checkpoint does not contain a 'model' state_dict. "
             "Cannot determine the communication target vocabulary."
         )
 
-    target_weight = (
-        model_state.get(
-            "actor.communication.decoder.target_head.weight"
-        )
-    )
+    num_host_targets = checkpoint.get("num_host_targets")
+    num_subnet_targets = checkpoint.get("num_subnet_targets")
 
-    if target_weight is None:
-        # Checkpoint has no target head. This can happen for an older
-        # communication configuration. The caller can fall back to
-        # the current environment's target count.
-        return None
-
-    if target_weight.ndim != 2:
+    if num_host_targets is not None and num_host_targets <= 0:
         raise RuntimeError(
-            "Unexpected target_head.weight shape: "
-            f"{tuple(target_weight.shape)}."
+            f"Invalid checkpoint num_host_targets: {num_host_targets}"
         )
 
-    num_targets = int(target_weight.shape[0])
-
-    if num_targets <= 0:
+    if num_subnet_targets is not None and num_subnet_targets <= 0:
         raise RuntimeError(
-            f"Invalid checkpoint target count: {num_targets}"
+            "Invalid checkpoint num_subnet_targets: "
+            f"{num_subnet_targets}"
         )
 
-    return num_targets
+    return num_host_targets, num_subnet_targets
 
 
 # ==========================================================
@@ -755,15 +759,15 @@ def evaluate_checkpoint(
     # which produced 95 while the checkpoint contained 94.
     # ------------------------------------------------------
 
-    checkpoint_num_targets = (
+    checkpoint_num_host_targets, checkpoint_num_subnet_targets = (
         get_checkpoint_num_targets(
             checkpoint_path
         )
     )
 
-    # Fall back only for old checkpoints that do not contain a
-    # target_head at all.
-    if checkpoint_num_targets is None:
+    # Fall back only for old checkpoints that do not contain these
+    # fields at all.
+    if checkpoint_num_host_targets is None:
 
         reference_env = CC4Env(
             red_agent_class=RED_AGENTS[
@@ -771,22 +775,43 @@ def evaluate_checkpoint(
             ],
         )
 
-        num_targets = (
+        num_host_targets = (
             reference_env.get_num_targets()
         )
 
         print(
-            "[MAPPO] Checkpoint has no target_head; "
-            "using current environment target count."
+            "[MAPPO] Checkpoint has no num_host_targets; "
+            "using current environment host target count."
         )
 
     else:
 
-        num_targets = checkpoint_num_targets
+        num_host_targets = checkpoint_num_host_targets
+
+    if checkpoint_num_subnet_targets is None:
+
+        reference_env = CC4Env(
+            red_agent_class=RED_AGENTS[
+                red_agent_names[0]
+            ],
+        )
+
+        num_subnet_targets = (
+            reference_env.get_num_subnet_targets()
+        )
+
+        print(
+            "[MAPPO] Checkpoint has no num_subnet_targets; "
+            "using current environment subnet target count."
+        )
+
+    else:
+
+        num_subnet_targets = checkpoint_num_subnet_targets
 
     print(
         f"[MAPPO] Checkpoint communication target count: "
-        f"{num_targets}"
+        f"host={num_host_targets} subnet={num_subnet_targets}"
     )
 
     # ------------------------------------------------------
@@ -807,12 +832,12 @@ def evaluate_checkpoint(
             ).get_num_targets()
         )
 
-        if env_target_count != num_targets:
+        if env_target_count != num_host_targets:
 
             print(
                 f"[WARNING] {red_name} environment reports "
-                f"{env_target_count} targets, but the checkpoint "
-                f"was trained with {num_targets}."
+                f"{env_target_count} host targets, but the checkpoint "
+                f"was trained with {num_host_targets}."
             )
 
             print(
@@ -833,7 +858,8 @@ def evaluate_checkpoint(
     # ------------------------------------------------------
 
     ppo = MAPPO(
-        num_targets=num_targets,
+        num_host_targets=num_host_targets,
+        num_subnet_targets=num_subnet_targets,
     )
 
     # ------------------------------------------------------

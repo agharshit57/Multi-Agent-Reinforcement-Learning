@@ -40,7 +40,7 @@ from .config import (
     GAE_LAMBDA,
 )
 
-from .gnn_attention import COMMUNICATION_DIM
+from .gnn_attention import COMMUNICATION_DIM, NUM_HQ_SUBNETS, MAX_HOSTS
 
 
 class MAPPOBuffer:
@@ -234,6 +234,33 @@ class MAPPOBuffer:
             dtype=np.float32,
         )
 
+        # ==========================================================
+        # HOST-LEVEL PADDING (host_active_mask)
+        #
+        # host_active_mask[t, agent, subnet_slot, host_slot]: True
+        # iff a REAL host (this episode) occupies that position for
+        # that agent -- see env.py.get_host_active_mask() /
+        # gnn_attention.py's module docstring ("Host-level padding")
+        # for the full explanation. Sourced from `state.hosts`
+        # existence, NEVER from alert values (a real, currently-quiet
+        # host and a nonexistent host both read 0 in the observation
+        # vector, so alert-derived signals can't distinguish them).
+        #
+        # One mask per (timestep, agent), reused by mappo.py.update()
+        # for both the receiver-side actor call AND the sender-side
+        # differentiable communication reconstruction -- see that
+        # file's own comment at the point it consumes this key. This
+        # reuse is valid because CC4 fixes the real host count per
+        # zone for the whole episode at reset time, so a single
+        # timestep's mask already describes every other timestep in
+        # the same episode.
+        # ==========================================================
+
+        self.host_active_mask = np.zeros(
+            (ROLLOUT_STEPS, NUM_AGENTS, NUM_HQ_SUBNETS, MAX_HOSTS),
+            dtype=bool,
+        )
+
         # ----------------------------------------------------------
         # Pointer
         # ----------------------------------------------------------
@@ -261,6 +288,7 @@ class MAPPOBuffer:
         communication_field_ids=None,
         communication_log_probs=None,
         communication_entropies=None,
+        host_active_mask=None,
     ):
         """
         Store one timestep of the multi-agent rollout.
@@ -281,6 +309,20 @@ class MAPPOBuffer:
             bool. Whether communication_source_obs is meaningful for
             this row (False at episode start, before any previous
             observation exists).
+
+        host_active_mask:
+
+            [N, NUM_HQ_SUBNETS, MAX_HOSTS] bool, or None.
+
+            This agent group's TRUE per-episode host-validity mask
+            for this timestep -- see env.py.get_host_active_mask()/
+            get_all_host_active_masks() and gnn_attention.py's module
+            docstring ("Host-level padding"). Row i is agent i's own
+            mask (matching `obs[i]`/`agent_names[i]` ordering
+            everywhere else in this buffer). Pass None (or omit) to
+            fall back to gnn_attention.py's own default -- every host
+            slot in an active subnet treated as real, i.e. no
+            per-host padding isolation.
         """
 
         if self.ptr >= ROLLOUT_STEPS:
@@ -433,6 +475,27 @@ class MAPPOBuffer:
                 communication_entropies
             )
 
+        # ==========================================================
+        # Host-level padding (host_active_mask)
+        # ==========================================================
+
+        if host_active_mask is not None:
+
+            host_active_mask = np.asarray(
+                host_active_mask, dtype=bool
+            )
+
+            expected_shape = (NUM_AGENTS, NUM_HQ_SUBNETS, MAX_HOSTS)
+
+            if host_active_mask.shape != expected_shape:
+                raise ValueError(
+                    "Invalid host_active_mask shape. "
+                    f"Expected {expected_shape}, "
+                    f"got {host_active_mask.shape}"
+                )
+
+            self.host_active_mask[t] = host_active_mask
+
         # ----------------------------------------------------------
         # Advance pointer
         # ----------------------------------------------------------
@@ -569,6 +632,17 @@ class MAPPOBuffer:
                 torch.tensor(
                     self.communication_entropies[:n],
                     dtype=torch.float32,
+                    device=DEVICE,
+                ),
+
+            # ======================================================
+            # Host-level padding (host_active_mask)
+            # ======================================================
+
+            "host_active_mask":
+                torch.tensor(
+                    self.host_active_mask[:n],
+                    dtype=torch.bool,
                     device=DEVICE,
                 ),
         }

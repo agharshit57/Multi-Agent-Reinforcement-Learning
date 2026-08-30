@@ -10,10 +10,12 @@ Ground truth
 ------------
 
 get_ground_truth(sender_id) reports what is ACTUALLY true in the sender's
-zone, RIGHT NOW, as pure per-host facts. It is deliberately independent
-of any agent message: it does not receive, inspect, or resolve a claimed
-target, and it never substitutes one host for another. Grading a message
-against this truth is entirely the MessageEvaluator's job.
+zone, RIGHT NOW, as pure per-host facts (and, as of this revision, the
+same facts aggregated per-subnet -- see "Subnet-level ground truth"
+below). It is deliberately independent of any agent message: it does not
+receive, inspect, or resolve a claimed target, and it never substitutes
+one host (or subnet) for another. Grading a message against this truth is
+entirely the MessageEvaluator's job.
 
     CybORG true state
           |
@@ -51,11 +53,29 @@ Still a heuristic, not a perfect oracle: it cannot yet distinguish
 SCAN from LATERAL_MOVEMENT from PRIVILEGE_ESCALATION within the
 SUSPICIOUS_ACTIVITY/COMPROMISE tiers (that would need per-action-type
 event tagging CybORG doesn't currently expose at the Host.events
-level). Ground truth here is host-level only; TargetType.SUBNET claims
-have no host-vocabulary equivalent, so the evaluator leaves them
-ungraded (get_num_targets() is host-only -- see schema.py/decoder.py
-for the open protocol gap).
+level).
+
+Subnet-level ground truth (this revision)
+--------------------------------------------
+HOST and SUBNET target claims used to share a single host-indexed
+ground truth, which meant SUBNET claims could never actually be graded
+(see communication/evaluator.py's old handling -- always excluded from
+scoring). get_ground_truth() now ALSO returns `subnet_status`, built by
+aggregating the SAME per-host snapshot up to the subnet level: a subnet
+is reported at whichever tier its most severe relevant host currently
+sits at. Subnet IDs use the deterministic mapping
+`sorted(state.subnet_name_to_cidr.keys())` -- the same alphabetical CC4
+subnet ordering already used by gnn_attention.py's SUBNET_NAME_ORDER, so
+"index 3" means the same subnet everywhere in this project that needs to
+agree on it. See get_num_subnet_targets() and communication/encoder.py's
+independent subnet-target embedding table for the other two pieces of
+this fix.
+
+Ground truth here is still host-and-subnet level only; there is no
+finer-grained target type currently in the schema.
 """
+
+import numpy as np
 
 from CybORG import CybORG
 from CybORG.Agents import (
@@ -65,6 +85,7 @@ from CybORG.Agents import (
 )
 from CybORG.Simulator.Scenarios import EnterpriseScenarioGenerator
 from CybORG.Agents.Wrappers import EnterpriseMAE
+from CybORG.Agents.Wrappers.BlueFlatWrapper import NUM_HQ_SUBNETS, MAX_HOSTS
 
 from .config import EPISODE_LENGTH
 # from .communication.schema import EventType, HostStatus, ThreatLevel
@@ -80,7 +101,7 @@ class CC4Env:
 
     def get_num_targets(self):
             """
-            Return the number of possible communication targets.
+            Return the number of possible HOST communication targets.
 
             Target IDs use the deterministic mapping:
 
@@ -88,6 +109,11 @@ class CC4Env:
 
             Therefore the target vocabulary size is the number
             of hosts currently known to CybORG.
+
+            This is the HOST vocabulary specifically -- see
+            get_num_subnet_targets() for the separate, independent
+            SUBNET vocabulary. The two must never be conflated; see
+            communication/schema.py's module docstring.
             """
 
             state = self.cyborg.environment_controller.state
@@ -95,6 +121,35 @@ class CC4Env:
             hostnames = sorted(state.hosts.keys())
 
             return len(hostnames)
+
+    def get_num_subnet_targets(self):
+        """
+        Return the number of possible SUBNET communication targets.
+
+        Subnet target IDs use the deterministic mapping:
+
+            sorted(state.subnet_name_to_cidr.keys())
+
+        the same alphabetical ordering CybORG's own BlueFlatWrapper
+        uses for its per-slot subnet one-hot (and that
+        gnn_attention.py's SUBNET_NAME_ORDER already reproduces) --
+        reusing that convention keeps subnet identity consistent
+        across every part of the pipeline that has to agree on
+        "which index means which subnet".
+
+        This is the SUBNET vocabulary specifically, an INDEPENDENT
+        index space from get_num_targets()'s HOST vocabulary -- index
+        3 here and index 3 there mean unrelated things. See
+        communication/schema.py's module docstring and
+        communication/encoder.py's separate subnet-target embedding
+        table.
+        """
+
+        state = self.cyborg.environment_controller.state
+
+        subnet_names = sorted(state.subnet_name_to_cidr.keys())
+
+        return len(subnet_names)
 
     def __init__(self, red_agent_class=FiniteStateRedAgent):
 
@@ -375,6 +430,110 @@ class CC4Env:
         return pairs
 
     ############################################################
+    # True per-episode host layout (for host_active_mask)
+    ############################################################
+
+    def get_host_active_mask(self, agent_name):
+        """
+        Return `agent_name`'s TRUE per-episode host-validity mask:
+
+            [NUM_HQ_SUBNETS, MAX_HOSTS] bool
+
+        True at (subnet_slot, host_slot) iff a REAL host occupies
+        that position THIS EPISODE. This is the mask
+        gnn_attention.py's SharedActor (via mappo.py's
+        `host_active_mask` plumbing) needs to isolate padded/fake
+        host nodes from the GNN -- see gnn_attention.py's module
+        docstring, "Host-level padding".
+
+        Why this can't be read off the observation vector
+        ----------------------------------------------------
+        CC4 randomizes 1-6 servers / 3-10 users per zone at reset
+        (fixed for the episode), but BlueFlatWrapper.observation_change
+        ANDs "host exists" together with "host currently has an
+        alert" into a single bit before the flat vector is ever
+        built (`h in state.hosts and 0 < len(...)`) -- so an absent
+        host and a present-but-currently-quiet host are bit-for-bit
+        identical (both read 0) at any given timestep. Existence must
+        therefore be read directly from `state.hosts`, never inferred
+        from alert values, or a real, currently-quiet host would be
+        wrongly masked out as if it were padding.
+
+        Ordering (must match gnn_attention.py + train.py exactly)
+        -------------------------------------------------------------
+        - Subnet slot order: `self.env.subnets(agent_name)` -- the
+          same sorted per-agent subnet list BlueFlatWrapper.
+          observation_change iterates over (`for subnet in
+          self.subnets(agent_name)`) and that train.py's
+          pad_observation() relies on when it places an agent's real
+          subnet block(s) into the first `len(subnets)` of
+          NUM_HQ_SUBNETS slots, in that same order. Agents with fewer
+          than NUM_HQ_SUBNETS real subnets (every agent except the HQ
+          agent) simply leave the remaining slots False here, which
+          is exactly the "padding subnet slot" state
+          `_build_batch_adjacency` already expects.
+
+        - Host slot order, per subnet: `[h for h in
+          self.env.hosts(agent_name) if subnet in h and "router" not
+          in h]` -- the identical filter BlueFlatWrapper.
+          observation_change uses to build `process_subvector`/
+          `connection_subvector` for that same subnet block, over the
+          same sorted, fixed-length (always MAX_HOSTS per subnet)
+          hostname list `self.env.hosts(agent_name)` returns
+          (BlueFixedActionWrapper pre-generates MAX_USER_HOSTS +
+          MAX_SERVER_HOSTS formatted hostnames per subnet regardless
+          of whether they exist this episode -- see
+          _create_hardcoded_metadata). Reusing the exact same list +
+          filter here guarantees host_slot `h` in this mask lines up
+          with process_subvector[h]/connection_subvector[h] in the
+          observation, for every subnet.
+
+        Existence check: `hostname in state.hosts` -- state.hosts
+        only contains the hosts CybORG actually generated this
+        episode, which is exactly the ground truth this mask needs.
+        """
+
+        state = self.cyborg.environment_controller.state
+
+        mask = np.zeros((NUM_HQ_SUBNETS, MAX_HOSTS), dtype=bool)
+
+        subnet_slots = self.env.subnets(agent_name)
+        hosts = self.env.hosts(agent_name)
+
+        for slot, subnet in enumerate(subnet_slots[:NUM_HQ_SUBNETS]):
+
+            subnet_hosts = [
+                h for h in hosts if subnet in h and "router" not in h
+            ]
+
+            for host_idx, hostname in enumerate(subnet_hosts[:MAX_HOSTS]):
+
+                mask[slot, host_idx] = hostname in state.hosts
+
+        return mask
+
+    def get_all_host_active_masks(self):
+        """
+        `get_host_active_mask` for every agent, stacked in the same
+        `sorted(self.possible_agents)` order train.py's `agent_names`
+        already uses everywhere else (obs_array, actions_arr, ...).
+
+        Returns
+        -------
+        np.ndarray, shape [NUM_AGENTS, NUM_HQ_SUBNETS, MAX_HOSTS], bool
+        """
+
+        agent_names = sorted(self.possible_agents)
+
+        return np.stack(
+            [
+                self.get_host_active_mask(name)
+                for name in agent_names
+            ],
+            axis=0,
+        )
+
+    ############################################################
     # Ground truth for MessageEvaluator / DynamicTrust
     ############################################################
 
@@ -435,23 +594,55 @@ class CC4Env:
 
         return snapshot
 
+    @staticmethod
+    def _tier_for_snapshot(host_snapshot):
+        """
+        Map one host's raw snapshot booleans to the (event_type,
+        threat_level, status) tier used by both target_status and
+        subnet_status below. Returns None for the NONE tier (host is
+        left out of the ground-truth dict entirely, same convention
+        both callers already relied on before this was factored out).
+        """
+
+        if host_snapshot["compromised"]:
+
+            return {
+                "event_type": EventType.COMPROMISE,
+                "threat_level": ThreatLevel.HIGH,
+                "status": HostStatus.COMPROMISED,
+            }
+
+        if host_snapshot["has_process_event"] or host_snapshot["has_connection_event"]:
+
+            # Suspicious tier: an event exists but no Red session is
+            # confirmed. Not Red-exclusive (see _compute_host_snapshot()),
+            # so reported as SUSPICIOUS_ACTIVITY, never COMPROMISE.
+            return {
+                "event_type": EventType.SUSPICIOUS_ACTIVITY,
+                "threat_level": ThreatLevel.MEDIUM,
+                "status": HostStatus.SUSPICIOUS,
+            }
+
+        return None
+
     def get_ground_truth(self, sender_id):
         """
         Pure, message-independent ground truth for the sender's zone.
 
-        This reports what is ACTUALLY true about every relevant host in
-        the sender's security zone, RIGHT NOW. It does NOT receive,
-        inspect, or resolve any agent message, target, or receiver -- it
-        answers only "what is true in the sender's zone?". Grading a
-        specific claim against this truth is entirely MessageEvaluator's
-        job (see communication/evaluator.py).
+        This reports what is ACTUALLY true about every relevant host (AND,
+        as of this revision, every relevant subnet) in the sender's
+        security zone, RIGHT NOW. It does NOT receive, inspect, or resolve
+        any agent message, target, or receiver -- it answers only "what is
+        true in the sender's zone?". Grading a specific claim against this
+        truth is entirely MessageEvaluator's job (see
+        communication/evaluator.py).
 
         This is the fix for the old wrong-target rescue: because we never
         see the claimed target here, we can never silently re-point a
-        claim at a different, genuinely-compromised host. We simply
-        report the truth for the whole zone; a claim about an uninvolved
-        host will find that host absent from `target_status` and be
-        scored wrong by the evaluator.
+        claim at a different, genuinely-compromised host or subnet. We
+        simply report the truth for the whole zone; a claim about an
+        uninvolved host/subnet will find it absent from
+        target_status/subnet_status and be scored wrong by the evaluator.
 
         State source
         ------------
@@ -460,8 +651,8 @@ class CC4Env:
         from the start-of-step observation is graded against the state it
         was actually generated from -- not the mutated post-step state.
 
-        Per-host tiers
-        --------------
+        Per-host tiers (target_status)
+        -------------------------------
             active Red session
                 -> EventType.COMPROMISE / ThreatLevel.HIGH
                    / HostStatus.COMPROMISED
@@ -472,6 +663,17 @@ class CC4Env:
 
             neither
                 -> absent from target_status (i.e. NONE / normal)
+
+        Per-subnet tiers (subnet_status)
+        -----------------------------------
+        Each subnet is reported at whichever tier its most severe
+        relevant host (by the same three tiers above) currently sits at.
+        A subnet with no flagged hosts is absent from subnet_status,
+        exactly mirroring target_status's own convention. This is a
+        genuinely SEPARATE ground-truth dict from target_status -- a
+        SUBNET-typed message's target_id is a subnet index (see
+        communication/schema.py), never a host index, and must be graded
+        against subnet_status, never target_status.
 
         Returns
         -------
@@ -490,15 +692,23 @@ class CC4Env:
                     },
                     ...   # one entry per RELEVANT host in the zone
                 },
+                "subnet_status": {
+                    subnet_id (int): {
+                        "event_type":   EventType,
+                        "threat_level": ThreatLevel,
+                        "status":       HostStatus,
+                    },
+                    ...   # one entry per RELEVANT subnet in the zone
+                },
                 "zone_quiet": bool,   # True iff no relevant host exists
             }
 
-        target_id uses the deterministic sorted host list:
-
-            sorted(state.hosts.keys())
-
-        This MUST remain consistent with the target-ID mapping used by
-        the communication encoder/decoder and by get_num_targets().
+        target_id in target_status uses the deterministic sorted host
+        list (sorted(state.hosts.keys())) -- matching get_num_targets().
+        subnet_id in subnet_status uses the deterministic sorted subnet
+        list (sorted(state.subnet_name_to_cidr.keys())) -- matching
+        get_num_subnet_targets(). These MUST remain consistent with the
+        target-ID mappings used by the communication encoder/decoder.
         """
 
         # ------------------------------------------------------------
@@ -543,12 +753,29 @@ class CC4Env:
         }
 
         # ------------------------------------------------------------
+        # Deterministic subnet <-> subnet_id mapping.
+        #
+        # IMPORTANT: must match get_num_subnet_targets() and
+        # gnn_attention.py's SUBNET_NAME_ORDER.
+        # ------------------------------------------------------------
+
+        subnet_names = sorted(state.subnet_name_to_cidr.keys())
+
+        subnet_to_id = {
+            name: index
+            for index, name in enumerate(subnet_names)
+        }
+
+        # ------------------------------------------------------------
         # Every host in the sender's zone, graded from the PRE-STEP
         # snapshot (not a fresh live query). Hosts with no relevant
-        # activity are simply left out of target_status.
+        # activity are simply left out of target_status. Subnet-level
+        # status is aggregated from the SAME per-host tiers as we go,
+        # taking the most severe tier seen per subnet.
         # ------------------------------------------------------------
 
         target_status = {}
+        subnet_status = {}
 
         for hostname in sorted(self._pre_step_host_snapshot):
 
@@ -559,42 +786,39 @@ class CC4Env:
             if subnet not in sender_subnets:
                 continue
 
-            target_id = host_to_id.get(hostname)
-
-            if target_id is None:
-                # In the snapshot but not in the current host list, so it
-                # cannot be addressed by any message target_id -- skip.
-                continue
-
             snapshot = self._pre_step_host_snapshot[hostname]
 
-            if snapshot["compromised"]:
+            tier = self._tier_for_snapshot(snapshot)
 
-                target_status[target_id] = {
-                    "event_type": EventType.COMPROMISE,
-                    "threat_level": ThreatLevel.HIGH,
-                    "status": HostStatus.COMPROMISED,
-                }
+            if tier is None:
+                # NONE tier -- host absent from target_status, and
+                # contributes nothing to subnet_status either.
+                continue
 
-            elif (
-                snapshot["has_process_event"]
-                or snapshot["has_connection_event"]
-            ):
+            target_id = host_to_id.get(hostname)
 
-                # Suspicious tier: an event exists but no Red session is
-                # confirmed. Not Red-exclusive (see
-                # _compute_host_snapshot()), so reported as
-                # SUSPICIOUS_ACTIVITY, never COMPROMISE.
-                target_status[target_id] = {
-                    "event_type": EventType.SUSPICIOUS_ACTIVITY,
-                    "threat_level": ThreatLevel.MEDIUM,
-                    "status": HostStatus.SUSPICIOUS,
-                }
+            if target_id is not None:
+                target_status[target_id] = tier
+            # else: in the snapshot but not in the current host list,
+            # so it cannot be addressed by any HOST message target_id
+            # -- skip target_status, but it can still count toward its
+            # subnet's aggregated tier below.
 
-            # else: NONE tier -- host is absent from target_status.
+            subnet_id = subnet_to_id.get(subnet)
+
+            if subnet_id is not None:
+
+                existing = subnet_status.get(subnet_id)
+
+                if (
+                    existing is None
+                    or int(tier["threat_level"]) > int(existing["threat_level"])
+                ):
+                    subnet_status[subnet_id] = tier
 
         return {
             "target_status": target_status,
+            "subnet_status": subnet_status,
             "zone_quiet": len(target_status) == 0,
         }
 

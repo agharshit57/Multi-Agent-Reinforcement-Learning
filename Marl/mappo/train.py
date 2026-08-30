@@ -79,6 +79,7 @@ from .gnn_attention import (
     SUBNET_BLOCK_DIM,
     MESSAGE_DIM,
     NUM_HQ_SUBNETS,
+    MAX_HOSTS,
 )
 
 from CybORG.Agents import (
@@ -96,6 +97,7 @@ from .config import (
     ROLLOUT_STEPS,
     SEED,
     PRINT_EVERY,
+    CURRICULUM_ENABLED,
     CURRICULUM_SCHEDULE,
     SAVE_EVERY,
     CHECKPOINT_DIR,
@@ -263,7 +265,15 @@ def episode_is_done(terminated, truncated):
 def get_curriculum_stage(episode):
     """
     Progressive probabilistic curriculum.
+
+    If CURRICULUM_ENABLED is False, the schedule is skipped entirely
+    and every episode uses FiniteStateRedAgent (the "fully trained"
+    end state of the schedule) -- previously this flag was defined in
+    config.py but never checked here, so it had no effect either way.
     """
+
+    if not CURRICULUM_ENABLED:
+        return FiniteStateRedAgent
 
     probability_finite = 1.0
 
@@ -496,10 +506,12 @@ def train():
 # Communication target vocabulary
 ########################################################
 
-    num_targets = env.get_num_targets()
+    num_host_targets = env.get_num_targets()
+    num_subnet_targets = env.get_num_subnet_targets()
 
     print(
-        f"[MAPPO] Communication target count: {num_targets}"
+        f"[MAPPO] Communication target count: "
+        f"host={num_host_targets} subnet={num_subnet_targets}"
     )
 
     ########################################################
@@ -507,7 +519,8 @@ def train():
     ########################################################
 
     ppo = MAPPO(
-        num_targets=num_targets
+        num_host_targets=num_host_targets,
+        num_subnet_targets=num_subnet_targets,
     )
 
     buffer = MAPPOBuffer()
@@ -560,6 +573,30 @@ def train():
             obs_array[i] = pad_observation(obs_dict[name], obs_dims[name])
 
         global_obs = obs_array.reshape(-1)
+
+        ####################################################
+        # True per-episode host layout (host_active_mask)
+        #
+        # CC4 fixes the real host count per zone at reset, but that
+        # count is not recoverable from obs_array itself (see
+        # env.py.get_host_active_mask()'s docstring) -- so it is read
+        # directly from the environment's true state here, once per
+        # timestep, for every agent, in the same agent_names order
+        # obs_array/actions_arr/etc. already use. This does NOT
+        # change within an episode; it is only recomputed because a
+        # fresh CC4Env (and therefore a fresh episode's host layout)
+        # is created at every episode boundary below.
+        ####################################################
+
+        host_active_mask_array = env.get_all_host_active_masks()
+
+        assert host_active_mask_array.shape == (
+            NUM_AGENTS, NUM_HQ_SUBNETS, MAX_HOSTS
+        ), (
+            "env.get_all_host_active_masks() returned "
+            f"{host_active_mask_array.shape}, expected "
+            f"{(NUM_AGENTS, NUM_HQ_SUBNETS, MAX_HOSTS)}."
+        )
 
         ####################################################
         # Messages available BEFORE acting
@@ -630,6 +667,7 @@ def train():
                 agent_id=i,
                 received_messages=received_messages,
                 trust_weights=trust_weights,
+                host_active_mask=host_active_mask_array[i],
             )
 
             actions_dict[name] = action
@@ -653,6 +691,7 @@ def train():
         ) = ppo.get_outgoing_messages(
             obs_array,
             return_decoded=True,
+            host_active_mask=host_active_mask_array,
         )
 
         ####################################################
@@ -754,6 +793,8 @@ def train():
             communication_field_ids=stored_field_ids,
             communication_log_probs=stored_comm_log_probs,
             communication_entropies=stored_comm_entropies,
+
+            host_active_mask=host_active_mask_array,
         )
 
         ####################################################

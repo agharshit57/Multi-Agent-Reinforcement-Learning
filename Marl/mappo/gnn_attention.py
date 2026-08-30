@@ -561,7 +561,8 @@ class SharedActor(nn.Module):
         num_agents: int = NUM_AGENTS,
         communication_dim: int = COMMUNICATION_DIM,
         communication_latent_dim: int = COMMUNICATION_LATENT_DIM,
-        num_targets: Optional[int] = None,
+        num_host_targets: Optional[int] = None,
+        num_subnet_targets: Optional[int] = None,
         use_host_graph: bool = True,
         subnet_edges: Optional[List[Tuple[int, int]]] = SUBNET_EDGES,
     ):
@@ -668,14 +669,26 @@ class SharedActor(nn.Module):
         )
 
         # ------------------------------------------------------
-        # Structured communication module (unchanged)
+        # Structured communication module
+        #
+        # num_targets -> num_host_targets/num_subnet_targets: target_id
+        # is one field (schema.py's MESSAGE_FIELDS is unchanged), but
+        # its vocabulary depends on target_type -- HOST and SUBNET are
+        # separate, independently-sized vocabularies now (see
+        # communication/encoder.py and communication/decoder.py's dual
+        # host/subnet embedding tables and heads). Passed straight
+        # through; StructuredCommunication is expected to forward these
+        # to MessageEncoder.build_target_embeddings(...) /
+        # MessageDecoder.build_target_heads(...) using the same two
+        # names.
         # ------------------------------------------------------
 
         self.communication = StructuredCommunication(
             input_dim=communication_latent_dim,
             message_dim=communication_dim,
             num_agents=num_agents,
-            num_targets=num_targets,
+            num_host_targets=num_host_targets,
+            num_subnet_targets=num_subnet_targets,
         )
 
         # ------------------------------------------------------
@@ -1457,11 +1470,17 @@ class CentralCritic(nn.Module):
 class MAPPOModel(nn.Module):
     """
     Complete MAPPO model. Contains SharedActor + CentralCritic.
+
+    num_targets -> num_host_targets/num_subnet_targets: see
+    SharedActor's matching constructor comment. Both are optional and
+    independent -- either may be None if that vocabulary isn't
+    configured yet.
     """
 
     def __init__(
         self,
-        num_targets: Optional[int] = None,
+        num_host_targets: Optional[int] = None,
+        num_subnet_targets: Optional[int] = None,
         use_host_graph: bool = True,
         subnet_edges: Optional[List[Tuple[int, int]]] = SUBNET_EDGES,
     ):
@@ -1472,7 +1491,8 @@ class MAPPOModel(nn.Module):
             num_agents=NUM_AGENTS,
             communication_dim=COMMUNICATION_DIM,
             communication_latent_dim=COMMUNICATION_LATENT_DIM,
-            num_targets=num_targets,
+            num_host_targets=num_host_targets,
+            num_subnet_targets=num_subnet_targets,
             use_host_graph=use_host_graph,
             subnet_edges=subnet_edges,
         )

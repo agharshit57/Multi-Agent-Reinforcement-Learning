@@ -22,32 +22,63 @@ Rollout communication is generated under no_grad(), which is correct.
 The rollout buffer stores:
 
     communication_source_obs
+    communication_field_ids
 
-During PPO optimization, messages are reconstructed from those
-observations through the CURRENT sender network:
+During PPO optimization, TWO SEPARATE mechanisms train the
+communication pipeline -- they are easy to conflate, so this section
+is explicit about which is which.
 
-    source observation
-            |
-            v
-      sender actor
-            |
-            v
-       decoder
-            |
-            v
-       encoder
-            |
-            v
- communication vector
-            |
-            v
-    receiver attention
-            |
-            v
-        PPO loss
+(a) A genuinely differentiable path, for the RECEIVER side only:
 
-Therefore gradients can flow through the complete communication
-pipeline.
+        communication_field_ids (fixed, discrete, from rollout)
+                |
+                v
+          encoder.encode_from_ids(...)
+                |
+                v
+        communication vector
+                |
+                v
+        receiver attention -> policy_input_projection -> PPO loss
+
+    `communication_field_ids` are already-sampled integers pulled
+    straight from the buffer -- they are not differentiable tensors,
+    so gradients from the receiver's action/value loss flow into the
+    `encoder`'s parameters (and everything downstream: receiver
+    attention, policy head, critic), but they CANNOT flow past the
+    field-id boundary into whatever produced those ids (the `decoder`
+    or the sender's `actor`). That upstream computation isn't even
+    part of this forward graph -- the ids were sampled by a different,
+    earlier (and by update time, stale) copy of the model.
+
+(b) A score-function (REINFORCE/PPO-style) path, for the SENDER side:
+
+        source observation
+                |
+                v
+          sender actor (CURRENT weights)
+                |
+                v
+          decoder.evaluate_message(...) -> log P(stored field_ids)
+                |
+                v
+        communication_ratio = exp(new_log_prob - old_log_prob)
+                |
+                v
+        communication_actor_loss (clipped surrogate, using the
+        RECEIVER's advantage as the reward signal for the sender's
+        message-generation policy)
+
+    This is exactly how the primary action is trained (same
+    ratio/clip/advantage recipe) and is the ONLY mechanism that
+    updates `decoder`/sender-`actor` parameters based on message
+    quality. It is real, standard, and correct PPO training for a
+    discrete action space -- but it is policy-gradient training via
+    log-probability, not literal backpropagation "through" the
+    sampling step. If you want the latter (e.g. Gumbel-softmax /
+    straight-through estimators so gradients flow continuously from
+    receiver outcome all the way to the sender's decoder logits),
+    that is a genuine architecture change and is out of scope here.
 
 The detached ``received_messages`` stored in the buffer are retained
 for compatibility/debugging, but are NOT used as the differentiable
@@ -57,42 +88,88 @@ Eval/train lifecycle
 ---------------------
 
 The model contains dropout (inside the actor's and critic's
-nn.MultiheadAttention layers), and nn.Module defaults to `.train()`
-mode on construction. `__init__` explicitly puts the model in
-`.eval()` before returning, so the very first rollout -- collected
-before any PPO update has happened -- runs with dropout OFF, exactly
-like every later rollout. `train.py`'s existing cycle (`ppo.train()`
-immediately before `update()`, `ppo.eval()` immediately after) is
-what keeps it that way: `.train()` is only ever active while computing
-the PPO update itself, and `.eval()` is restored before the next
-rollout starts.
+nn.MultiheadAttention layers). Dropout must be OFF everywhere a
+probability that later enters a PPO ratio is computed, or the ratio
+stops being a measurement of "how has the policy changed" and starts
+being contaminated by per-call dropout noise that has nothing to do
+with the weight update.
 
-Communication credit assignment
----------------------------------
+Both halves of that are now enforced:
 
-`update()`'s communication PPO term applies ONE receiver-level
-advantage to every sender that receiver heard from -- if receiver B
-gets a positive advantage, messages from every sender B received are
-reinforced together, even though only one of them may actually have
-been useful. This is deliberately softened, not eliminated: the
-advantage used in `comm_surrogate1/2` is re-weighted per (sender,
-receiver) pair by `mb_trust_weights` -- the receiver's own current
-trust in each sender (see communication/trust.py, and
-evaluator.py/train.py's receiver-relevance fix, which is what makes
-that trust genuinely per-sender-per-receiver in the first place).
-This lets a receiver's advantage preferentially reinforce the senders
-it has reason to trust more. It is a soft re-weighting of the
-advantage magnitude only -- `comm_valid_count` (the loss's averaging
-denominator) still counts actual valid, non-self rows exactly as
-before, so low-trust senders are still trained on, just with a
-smaller effective gradient contribution, rather than being dropped
-from the batch. The communication entropy term is intentionally left
-unweighted: exploration is exactly what a currently-low-trust sender
-needs in order to earn trust, so down-weighting it there would be
-self-defeating. If a future need arises for exact single-sender credit
-assignment (e.g. counterfactual/difference-reward style attribution),
-that would be a larger change to the communication objective itself,
-not a tweak to this weighting.
+  - Rollout (`select_action`, `get_outgoing_message(s)`) always runs
+    under `.eval()` -- unchanged, `__init__` puts the model in
+    `.eval()` before returning, so even the very first rollout
+    (before any update) is dropout-free.
+  - `update()` now ALSO forces `.eval()` at its own start,
+    unconditionally, regardless of what the caller left the model in
+    beforehand. `.eval()` does not disable autograd or block
+    `.backward()`/`optimizer.step()` -- it only changes the forward
+    behavior of dropout (and batchnorm, unused here) layers. So
+    `evaluate_actions()`'s forward passes now use the exact same
+    (deterministic, dropout-off) computation as the rollout that
+    produced `old_log_probs`/`old_communication_log_probs`, and the
+    PPO ratio is a clean measurement of the actual weight change.
+
+Net effect: dropout is never active anywhere in this pipeline. That
+is a deliberate consequence of fixing the ratio, not a partial fix --
+if you want dropout's regularization back, it needs to live somewhere
+that doesn't feed a PPO ratio (e.g. an auxiliary head), which is out
+of scope here. `train.py`'s existing `ppo.train()` call immediately
+before `update()` is now a harmless no-op (immediately overridden
+inside `update()`); `train()`/`eval()` remain as plain pass-throughs
+for anyone who wants to toggle mode for some other purpose.
+
+Host-level padding (host_active_mask)
+----------------------------------------
+See gnn_attention.py's `SharedActor._build_batch_adjacency` /
+`_encode_entities` for the underlying fix: every active subnet slot
+always has MAX_HOSTS host nodes, but CC4 randomizes the real host
+count per zone per episode, and that count is NOT recoverable from
+the observation vector (BlueFlatWrapper ANDs "host exists" together
+with "host has an alert" into a single bit before it's ever written).
+`SharedActor` therefore accepts an optional per-episode
+`host_active_mask` to isolate the fake/padded host nodes -- but only
+if a caller actually supplies real values sourced from the
+environment.
+
+This file is that caller-facing plumbing: `select_action`,
+`get_outgoing_message`, `get_outgoing_messages`, `actor_forward`,
+`evaluate_actions`, and `update` all accept/forward a
+`host_active_mask` end to end (through both the receiver-side actor
+call AND the differentiable communication reconstruction's sender-
+side `get_local_hidden` call). Every one of them defaults to `None`,
+which reproduces `gnn_attention.py`'s own default ("every host slot
+in an active subnet is real") -- i.e. nothing breaks for existing
+callers that don't supply it. Actually sourcing correct per-episode,
+per-agent host counts from the environment and writing them into the
+rollout buffer under the key `"host_active_mask"` (shape
+`[T, NUM_AGENTS, NUM_HQ_SUBNETS, MAX_HOSTS]`, bool) is `train.py` /
+`buffer.py`'s job, and is outside this file.
+
+HOST/SUBNET target vocabularies (num_host_targets/num_subnet_targets)
+--------------------------------------------------------------------------
+`target_id` is one field in a structured message (schema.py's
+MESSAGE_FIELDS is unchanged, buffer/field-order layout is unchanged),
+but its MEANING depends on that same message's `target_type`: HOST and
+SUBNET are separate, independently-sized vocabularies (see
+communication/encoder.py's two embedding tables and
+communication/decoder.py's two target heads -- both selected per-row by
+target_type, never mixed). `MAPPO.__init__`'s single `num_targets`
+parameter is replaced by `num_host_targets` (required) and
+`num_subnet_targets` (optional, `None` if that vocabulary isn't
+configured), both forwarded unchanged to `MAPPOModel`/`SharedActor`,
+which forward them to `StructuredCommunication`, which is expected to
+size `MessageEncoder`/`MessageDecoder`'s respective HOST/SUBNET
+tables from them. None of the PPO communication training logic,
+field ordering, or buffer format described above changes because of
+this -- `target_id` is read and written as a single field exactly as
+before; only how many valid values it can take (and which embedding
+table/head interprets it) now depends on `target_type`.
+
+`save()`/`load()` persist and validate `num_host_targets`/
+`num_subnet_targets` against the checkpoint, so a vocabulary-size
+mismatch fails with a clear message instead of a cryptic tensor-shape
+error inside `load_state_dict()` -- see `load()`.
 """
 
 import numpy as np
@@ -101,7 +178,12 @@ import torch.nn.functional as F
 
 from torch.distributions import Categorical
 
-from .gnn_attention import MAPPOModel, COMMUNICATION_DIM
+from .gnn_attention import (
+    MAPPOModel,
+    COMMUNICATION_DIM,
+    NUM_HQ_SUBNETS,
+    MAX_HOSTS,
+)
 
 from .value_norm import ValueNorm
 
@@ -130,22 +212,33 @@ class MAPPO:
     # Initialization
     # ==========================================================
 
-    def __init__(self,num_targets):
+    def __init__(self, num_host_targets, num_subnet_targets=None):
 
         self.device = DEVICE
+
+        # target_id is one field (schema.py's MESSAGE_FIELDS is
+        # unchanged), but its vocabulary depends on target_type -- HOST
+        # and SUBNET are separate, independently-sized vocabularies
+        # (see communication/encoder.py's dual embedding tables and
+        # communication/decoder.py's dual target heads). num_targets is
+        # replaced by these two: num_host_targets is required (the host
+        # vocabulary is always in play), num_subnet_targets is optional
+        # (defaults to None, matching encoder/decoder's own
+        # build_target_embeddings()/build_target_heads() semantics of
+        # "that vocabulary isn't configured yet" rather than forcing a
+        # value). Stored on self so save()/load() can validate a
+        # checkpoint was produced with matching vocabulary sizes -- see
+        # save()/load() below.
+        self.num_host_targets = num_host_targets
+        self.num_subnet_targets = num_subnet_targets
 
         # ------------------------------------------------------
         # Networks
         # ------------------------------------------------------
 
-        # self.model = MAPPOModel().to(
-        #     self.device,
-        #     num_targets=YOUR_TARGET_COUNT
-        # )
-
-
         self.model = MAPPOModel(
-            num_targets=num_targets
+            num_host_targets=num_host_targets,
+            num_subnet_targets=num_subnet_targets,
         ).to(self.device)
         self.actor = self.model.actor
 
@@ -154,17 +247,14 @@ class MAPPO:
         # ------------------------------------------------------
         # Eval/train lifecycle
         #
-        # nn.Module defaults to .train() mode on construction, and
-        # this model has dropout inside its attention layers. Without
-        # this, the very first rollout (collected before any PPO
-        # update, hence before train.py's first ppo.eval() call)
-        # would run with dropout active while every subsequent
-        # rollout does not -- a stochastically different network for
-        # action selection AND communication generation on step one
-        # only. Starting in eval() here, combined with train.py's
-        # existing train()-before-update / eval()-after-update cycle,
-        # keeps every rollout (including the first) dropout-free, and
-        # only the PPO update itself runs with dropout active.
+        # nn.Module defaults to .train() mode on construction. Start
+        # in .eval() so even the very first rollout (before any PPO
+        # update) is dropout-free, matching every later rollout AND
+        # every PPO-update forward pass (update() now forces .eval()
+        # internally too -- see the module docstring's "Eval/train
+        # lifecycle" section for why dropout must be off everywhere a
+        # PPO ratio is computed, not just during rollout). Net effect:
+        # dropout is never active anywhere in this pipeline.
         # ------------------------------------------------------
 
         self.model.eval()
@@ -248,6 +338,56 @@ class MAPPO:
         )
 
     # ==========================================================
+    # Host-active-mask preparation
+    # ==========================================================
+
+    def _prepare_host_active_mask(
+        self,
+        host_active_mask,
+        batch_size,
+    ):
+        """
+        Normalize a caller-supplied per-episode host-validity mask to
+        [B, NUM_HQ_SUBNETS, MAX_HOSTS] bool on the right device, or
+        pass None through unchanged (gnn_attention.py's own default:
+        every host slot in an active subnet is treated as real -- see
+        SharedActor._build_batch_adjacency).
+
+        Accepts either an unbatched [NUM_HQ_SUBNETS, MAX_HOSTS] mask
+        (a single agent/timestep, matching how `observation` itself
+        is accepted unbatched by select_action()/get_outgoing_message)
+        or an already-batched [B, NUM_HQ_SUBNETS, MAX_HOSTS] /
+        [1, NUM_HQ_SUBNETS, MAX_HOSTS] (broadcast to batch_size).
+        """
+
+        if host_active_mask is None:
+            return None
+
+        mask = self._to_tensor(host_active_mask, dtype=torch.bool)
+
+        if mask.dim() == 2:
+            mask = mask.unsqueeze(0)
+
+        if mask.dim() != 3:
+            raise ValueError(
+                "host_active_mask must have shape [NUM_HQ_SUBNETS, "
+                "MAX_HOSTS] or [B, NUM_HQ_SUBNETS, MAX_HOSTS]. Got "
+                f"{tuple(mask.shape)}."
+            )
+
+        if mask.shape[1:] != (NUM_HQ_SUBNETS, MAX_HOSTS):
+            raise ValueError(
+                f"host_active_mask's last two dims must be "
+                f"(NUM_HQ_SUBNETS={NUM_HQ_SUBNETS}, "
+                f"MAX_HOSTS={MAX_HOSTS}). Got {tuple(mask.shape)}."
+            )
+
+        if mask.shape[0] == 1 and batch_size > 1:
+            mask = mask.expand(batch_size, -1, -1)
+
+        return mask
+
+    # ==========================================================
     # Action Mask
     # ==========================================================
 
@@ -285,6 +425,7 @@ class MAPPO:
         agent_id=None,
         received_messages=None,
         trust_weights=None,
+        host_active_mask=None,
     ):
         """
         Select an action using the shared actor.
@@ -300,11 +441,22 @@ class MAPPO:
 
             received_messages
             trust_weights
+
+        host_active_mask: optional, this agent's own per-episode host
+        validity ([NUM_HQ_SUBNETS, MAX_HOSTS] or already-batched --
+        see `_prepare_host_active_mask`). Defaults to None (no
+        per-host padding isolation, matching prior behavior).
         """
 
         observation = self._to_tensor(
             observation,
             dtype=torch.float32,
+        )
+
+        batch_size = 1 if observation.dim() == 1 else observation.shape[0]
+
+        prepared_host_mask = self._prepare_host_active_mask(
+            host_active_mask, batch_size
         )
 
         # ------------------------------------------------------
@@ -315,6 +467,7 @@ class MAPPO:
             observation,
             received_messages=received_messages,
             trust_weights=trust_weights,
+            host_active_mask=prepared_host_mask,
         )
 
         # ------------------------------------------------------
@@ -408,9 +561,15 @@ class MAPPO:
         self,
         observation,
         return_decoded=False,
+        host_active_mask=None,
     ):
         """
         Generate one agent's outgoing communication vector.
+
+        host_active_mask: optional, this agent's own per-episode host
+        validity (see `select_action`). This agent's local_hidden is
+        computed from its OWN observation in both select_action() and
+        here, so the same per-agent mask semantics apply.
         """
 
         observation = self._to_tensor(
@@ -418,9 +577,16 @@ class MAPPO:
             dtype=torch.float32,
         )
 
+        batch_size = 1 if observation.dim() == 1 else observation.shape[0]
+
+        prepared_host_mask = self._prepare_host_active_mask(
+            host_active_mask, batch_size
+        )
+
         local_hidden = (
             self.actor.get_local_hidden(
-                observation
+                observation,
+                host_active_mask=prepared_host_mask,
             )
         )
 
@@ -477,6 +643,7 @@ class MAPPO:
         self,
         observations,
         return_decoded=False,
+        host_active_mask=None,
     ):
         """
         Generate communication for every Blue agent.
@@ -488,6 +655,11 @@ class MAPPO:
         messages:
 
             [NUM_AGENTS, COMMUNICATION_DIM]
+
+        host_active_mask: optional [NUM_AGENTS, NUM_HQ_SUBNETS,
+        MAX_HOSTS] -- one row per agent, since each agent's own
+        subnet slot(s) have their own independent real host counts
+        this episode.
         """
 
         observations = self._to_tensor(
@@ -509,9 +681,14 @@ class MAPPO:
                 f"got {observations.shape[0]}"
             )
 
+        prepared_host_mask = self._prepare_host_active_mask(
+            host_active_mask, NUM_AGENTS
+        )
+
         local_hidden = (
             self.actor.get_local_hidden(
-                observations
+                observations,
+                host_active_mask=prepared_host_mask,
             )
         )
 
@@ -900,17 +1077,25 @@ class MAPPO:
         action_masks=None,
         received_messages=None,
         trust_weights=None,
+        host_active_mask=None,
     ):
         """
         Standard actor forward.
 
         This remains available for compatibility.
+
+        host_active_mask: optional, already-batched
+        [B, NUM_HQ_SUBNETS, MAX_HOSTS] -- passed straight through to
+        the actor (unlike select_action()/get_outgoing_message(), the
+        caller here is expected to already have batch-aligned data,
+        e.g. evaluate_actions()).
         """
 
         logits = self.actor(
             observations,
             received_messages=received_messages,
             trust_weights=trust_weights,
+            host_active_mask=host_active_mask,
         )
 
         logits = self._apply_action_mask(
@@ -1013,10 +1198,14 @@ class MAPPO:
             )
 
         # ----------------------------------------------------------
-        # Sender field IDs are the already-sampled rollout actions
-        # (fixed). Only the encoder runs here -- the decoder/actor
-        # recompute happens separately in evaluate_actions() for the
-        # communication_log_probs / communication_entropy PPO terms.
+        # NOTE on gradients: this reconstruction ONLY runs the
+        # encoder on the already-sampled, fixed `communication_field_
+        # ids` -- see the module docstring's "Structured communication
+        # training" section, part (a). It does NOT recompute
+        # sender_hidden / re-run the decoder, so it cannot and does
+        # not train the sender actor or decoder; that happens
+        # separately, via the score-function path in
+        # evaluate_actions()/update() (part (b) of the same section).
         # ----------------------------------------------------------
 
         # sender_hidden = (
@@ -1228,6 +1417,8 @@ class MAPPO:
         communication_source_obs=None,
         communication_field_ids=None,
         communication_valid=None,
+        host_active_mask=None,
+        communication_host_active_mask=None,
     ):
         """
         Evaluate actions during PPO optimization.
@@ -1239,17 +1430,16 @@ class MAPPO:
 
             communication_source_obs is supplied.
 
-            Messages are regenerated through:
-
-                sender actor
-                    ->
-                decoder
-                    ->
-                encoder
-                    ->
-                receiver attention
-
-            This is the mode used by the new PPO update.
+            The receiver's incoming communication vector is rebuilt
+            from the fixed, already-sampled communication_field_ids
+            via the CURRENT encoder (see module docstring, part (a)
+            -- this trains encoder/receiver-side parameters, NOT the
+            sender's decoder/actor). Separately, communication_log_
+            probs/communication_entropy are recomputed by re-running
+            the CURRENT sender actor + decoder over the stored
+            communication_field_ids (part (b) -- this is what trains
+            decoder/sender-actor parameters, via the score-function
+            communication_actor_loss built in update()).
 
         2. Legacy mode:
 
@@ -1261,12 +1451,25 @@ class MAPPO:
 
             both are None.
 
+        host_active_mask: optional [B, NUM_HQ_SUBNETS, MAX_HOSTS] --
+        the RECEIVER's own per-host validity, used for the
+        `actor_forward` call below (the receiver's own observation).
+
+        communication_host_active_mask: optional
+        [B, NUM_AGENTS, NUM_HQ_SUBNETS, MAX_HOSTS] -- each SENDER's
+        own per-host validity, used when recomputing sender_hidden
+        for communication_log_probs/entropy above. Mirrors how
+        communication_source_obs itself carries one observation per
+        sender.
+
         Returns
         -------
 
         log_probs
         entropy
         values
+        communication_log_probs
+        communication_entropy
         """
 
         # ======================================================
@@ -1308,8 +1511,37 @@ class MAPPO:
                 OBS_DIM,
             )
 
+            flat_comm_host_mask = None
+
+            if communication_host_active_mask is not None:
+
+                if communication_host_active_mask.shape != (
+                    batch_size,
+                    NUM_AGENTS,
+                    NUM_HQ_SUBNETS,
+                    MAX_HOSTS,
+                ):
+
+                    raise ValueError(
+                        "communication_host_active_mask must have "
+                        f"shape ({batch_size}, {NUM_AGENTS}, "
+                        f"{NUM_HQ_SUBNETS}, {MAX_HOSTS}). Got "
+                        f"{tuple(communication_host_active_mask.shape)}."
+                    )
+
+                flat_comm_host_mask = (
+                    communication_host_active_mask
+                    .to(device=self.device, dtype=torch.bool)
+                    .reshape(
+                        batch_size * NUM_AGENTS,
+                        NUM_HQ_SUBNETS,
+                        MAX_HOSTS,
+                    )
+                )
+
             sender_hidden = self.actor.get_local_hidden(
-                sender_obs
+                sender_obs,
+                host_active_mask=flat_comm_host_mask,
             )
 
             # Select the receiver's relevant sender observations.
@@ -1381,6 +1613,7 @@ class MAPPO:
             action_masks,
             received_messages=received_messages,
             trust_weights=trust_weights,
+            host_active_mask=host_active_mask,
         )
 
         # ======================================================
@@ -1413,11 +1646,6 @@ class MAPPO:
             agent_ids,
         ]
 
-        # return (
-        #     log_probs,
-        #     entropy,
-        #     values,
-        # )
         return (
             log_probs,
             entropy,
@@ -1436,6 +1664,12 @@ class MAPPO:
     ):
         """
         Save MAPPO checkpoint.
+
+        Also saves num_host_targets/num_subnet_targets (the sizes this
+        instance's host/subnet target embeddings and heads were
+        actually constructed with) so load() can catch a vocabulary-
+        size mismatch with a clear error instead of a cryptic tensor-
+        shape mismatch from load_state_dict(). See load().
         """
 
         trust_state = None
@@ -1467,6 +1701,12 @@ class MAPPO:
 
             "trust_state":
                 trust_state,
+
+            "num_host_targets":
+                self.num_host_targets,
+
+            "num_subnet_targets":
+                self.num_subnet_targets,
         }
 
         torch.save(
@@ -1485,13 +1725,72 @@ class MAPPO:
         """
         Load MAPPO checkpoint.
 
-        Old checkpoints without trust state remain compatible.
+        Old checkpoints without trust state remain compatible. Old
+        checkpoints without num_host_targets/num_subnet_targets (saved
+        before the HOST/SUBNET target split) also remain loadable --
+        those keys are simply absent, so the vocabulary-size check
+        below is skipped rather than failing. Old checkpoints WITH the
+        old single-vocabulary architecture will still fail inside
+        load_state_dict() below on a genuine shape mismatch (there's no
+        way to reinterpret a single target_embedding/target_head as
+        two separate ones), just as before this change -- this method
+        only makes the NEW two-vocabulary case fail with a clear
+        message instead of a cryptic one.
         """
 
         checkpoint = torch.load(
             path,
             map_location=self.device,
         )
+
+        # ------------------------------------------------------
+        # Vocabulary-size validation
+        #
+        # This MAPPO instance's host_target_embedding/host_target_head
+        # (and the subnet equivalents) were already constructed at a
+        # fixed size in __init__/MAPPOModel -- load_state_dict() below
+        # can only succeed if the checkpoint's saved tensors are that
+        # exact size. Checking here first turns a shape-mismatch stack
+        # trace deep inside load_state_dict() into an actionable
+        # message naming exactly which vocabulary and which two sizes
+        # disagree.
+        # ------------------------------------------------------
+
+        checkpoint_num_host_targets = checkpoint.get(
+            "num_host_targets"
+        )
+
+        if (
+            checkpoint_num_host_targets is not None
+            and checkpoint_num_host_targets != self.num_host_targets
+        ):
+
+            raise ValueError(
+                "Checkpoint was saved with "
+                f"num_host_targets={checkpoint_num_host_targets}, but "
+                "this MAPPO instance was constructed with "
+                f"num_host_targets={self.num_host_targets}. Reconstruct "
+                "MAPPO with the checkpoint's value before calling "
+                "load()."
+            )
+
+        checkpoint_num_subnet_targets = checkpoint.get(
+            "num_subnet_targets"
+        )
+
+        if (
+            checkpoint_num_subnet_targets is not None
+            and checkpoint_num_subnet_targets != self.num_subnet_targets
+        ):
+
+            raise ValueError(
+                "Checkpoint was saved with "
+                f"num_subnet_targets={checkpoint_num_subnet_targets}, "
+                "but this MAPPO instance was constructed with "
+                f"num_subnet_targets={self.num_subnet_targets}. "
+                "Reconstruct MAPPO with the checkpoint's value before "
+                "calling load()."
+            )
 
         self.model.load_state_dict(
             checkpoint["model"]
@@ -1535,9 +1834,7 @@ class MAPPO:
         # Loading a checkpoint doesn't go through __init__, so the
         # same eval-by-default guarantee is restored here explicitly
         # -- otherwise a freshly loaded model would sit in whatever
-        # mode it happened to be saved in (typically .eval(), since
-        # save() is normally called between updates, but this makes
-        # it unconditional rather than relying on that convention).
+        # mode it happened to be saved in.
         self.model.eval()
 
     # ==========================================================
@@ -1559,25 +1856,16 @@ class MAPPO:
             communication_source_obs
             communication_valid
             trust_weights
+            host_active_mask (optional; see module docstring)
 
         The source observations are passed through the CURRENT
         sender communication network during every PPO minibatch.
-
-        Therefore the PPO gradient can reach:
-
-            receiver policy
-                ^
-                |
-        communication attention
-                ^
-                |
-             encoder
-                ^
-                |
-             decoder
-                ^
-                |
-          sender actor
+        See the module docstring's "Structured communication
+        training" section for exactly what is and isn't
+        differentiable here -- in short, the encoder/receiver side is
+        truly differentiable; the decoder/sender-actor side is
+        trained via the separate score-function
+        communication_actor_loss below, not literal backprop.
 
         ``received_messages`` is deliberately NOT used as the
         differentiable source when ``communication_source_obs``
@@ -1589,13 +1877,24 @@ class MAPPO:
         (``mb_trust_weights``) before being used in
         ``comm_surrogate1/2`` below, so a receiver's advantage doesn't
         reinforce every incoming sender equally.
+
+        Eval/train lifecycle: this method forces the model into
+        `.eval()` at the very start (see module docstring), regardless
+        of what mode the caller left it in, so every forward pass
+        computed here uses the same dropout-off behavior as the
+        rollout that produced `old_log_probs`/
+        `old_communication_log_probs` -- the PPO ratio needs both
+        sides computed under the same conditions to mean what it's
+        supposed to mean. `.eval()` does not block gradients or
+        `optimizer.step()`.
         """
 
-        # Caller is responsible for switching to .train() before
-        # calling update() and back to .eval() after (see train.py) --
-        # this method does not toggle mode itself, since it may be
-        # called multiple times / minibatches per "update" and the
-        # mode should stay stable for the whole call.
+        # `.eval()` is forced here, not left to the caller (see
+        # module + method docstrings): dropout must be off for every
+        # forward pass in this method, and that has to hold
+        # regardless of whether train.py remembered to call
+        # ppo.eval() first.
+        self.model.eval()
 
         batch = buffer.get_batches()
 
@@ -1656,6 +1955,19 @@ class MAPPO:
             None,
         )
 
+        # ------------------------------------------------------
+        # Host validity (see module docstring). Raw buffer shape:
+        # [T, NUM_AGENTS, NUM_HQ_SUBNETS, MAX_HOSTS]. Kept in this
+        # raw form for now -- it's reshaped two different ways below
+        # (receiver-flattened, and sender-expanded-per-receiver),
+        # mirroring how `communication_source_obs` itself is handled.
+        # ------------------------------------------------------
+
+        host_active_mask = batch.get(
+            "host_active_mask",
+            None,
+        )
+
         # ======================================================
         # Dimensions
         # ======================================================
@@ -1690,29 +2002,11 @@ class MAPPO:
         old_values = old_values.reshape(
             T * NUM_AGENTS,
         )
-        communication_field_ids = (
-            communication_field_ids
-            if communication_field_ids is None
-            else communication_field_ids
-        )
-        old_communication_log_probs = (
-            old_communication_log_probs
-            if old_communication_log_probs is None
-            else old_communication_log_probs
-        )
 
         action_masks = action_masks.reshape(
             T * NUM_AGENTS,
             -1,
         )
-        # commented , now dont point out this
-        # if communication_source_obs is not None:
-        #     communication_source_obs = (
-        #         communication_source_obs.reshape(
-        #             T * NUM_AGENTS,
-        #             OBS_DIM,
-        #         )
-        #     )
 
         # ======================================================
         # Flatten communication source observations
@@ -1727,36 +2021,16 @@ class MAPPO:
                 )
             )
 
-            if communication_source_obs.shape != (
-                T,
-                NUM_AGENTS,
-                NUM_AGENTS,
-                OBS_DIM,
-            ):
+            expected_source_shape = (T, NUM_AGENTS, OBS_DIM)
 
-                # Current buffer stores:
-                #
-                # [T, N, OBS]
-                #
-                # where each timestep contains the previous
-                # timestep's complete multi-agent observation.
-                #
-                # Expand receiver dimension later.
-                if communication_source_obs.shape == (
-                    T,
-                    NUM_AGENTS,
-                    OBS_DIM,
-                ):
+            if tuple(communication_source_obs.shape) != expected_source_shape:
 
-                    pass
-
-                else:
-
-                    raise ValueError(
-                        "Unexpected communication_source_obs "
-                        "shape: "
-                        f"{tuple(communication_source_obs.shape)}"
-                    )
+                raise ValueError(
+                    "communication_source_obs must have shape "
+                    f"{expected_source_shape} (T, NUM_AGENTS, "
+                    f"OBS_DIM); got "
+                    f"{tuple(communication_source_obs.shape)}."
+                )
 
         # ======================================================
         # Flatten communication validity
@@ -1806,6 +2080,49 @@ class MAPPO:
                     T * NUM_AGENTS,
                     NUM_AGENTS,
                 )
+            )
+
+        # ======================================================
+        # Host validity
+        #
+        # Buffer convention: host_active_mask[t, agent, subnet_slot,
+        # host_slot] -- one mask per (timestep, agent), reused for
+        # two purposes below:
+        #
+        #   receiver-flattened: exactly like `obs` -- row (t,agent)
+        #   is that agent's OWN mask when it was the one acting.
+        #
+        #   sender-expanded: exactly like `communication_source_obs`
+        #   -- broadcast across the receiver dimension so every
+        #   receiver's minibatch row carries all NUM_AGENTS senders'
+        #   masks, for the differentiable reconstruction's per-sender
+        #   get_local_hidden() call.
+        # ======================================================
+
+        host_active_mask_flat = None
+        host_active_mask_raw = None
+
+        if host_active_mask is not None:
+
+            host_active_mask_raw = host_active_mask.to(
+                device=self.device, dtype=torch.bool
+            )
+
+            expected_host_shape = (
+                T, NUM_AGENTS, NUM_HQ_SUBNETS, MAX_HOSTS
+            )
+
+            if tuple(host_active_mask_raw.shape) != expected_host_shape:
+
+                raise ValueError(
+                    "host_active_mask must have shape "
+                    f"{expected_host_shape} (T, NUM_AGENTS, "
+                    f"NUM_HQ_SUBNETS, MAX_HOSTS); got "
+                    f"{tuple(host_active_mask_raw.shape)}."
+                )
+
+            host_active_mask_flat = host_active_mask_raw.reshape(
+                T * NUM_AGENTS, NUM_HQ_SUBNETS, MAX_HOSTS
             )
 
         # ======================================================
@@ -2121,6 +2438,54 @@ class MAPPO:
                     )
 
                 # ==================================================
+                # Host validity
+                #
+                # Receiver-side: same [T*N, ...] indexing as mb_obs.
+                # Sender-side: expanded across the receiver dimension
+                # exactly like mb_source_obs above, only actually
+                # built when communication_source_obs is in play
+                # (otherwise there's no differentiable reconstruction
+                # to feed it to).
+                # ==================================================
+
+                mb_host_active_mask = None
+
+                if host_active_mask_flat is not None:
+
+                    mb_host_active_mask = (
+                        host_active_mask_flat[idx]
+                    )
+
+                mb_comm_host_active_mask = None
+
+                if (
+                    communication_source_obs is not None
+                    and host_active_mask_raw is not None
+                ):
+
+                    comm_host_mask = (
+                        host_active_mask_raw
+                        .unsqueeze(1)
+                        .expand(
+                            -1,
+                            NUM_AGENTS,
+                            -1,
+                            -1,
+                            -1,
+                        )
+                        .reshape(
+                            T * NUM_AGENTS,
+                            NUM_AGENTS,
+                            NUM_HQ_SUBNETS,
+                            MAX_HOSTS,
+                        )
+                    )
+
+                    mb_comm_host_active_mask = (
+                        comm_host_mask[idx]
+                    )
+
+                # ==================================================
                 # Forward
                 # ==================================================
 
@@ -2151,6 +2516,12 @@ class MAPPO:
                     communication_valid=(
                         mb_comm_valid
                     ),
+
+                    host_active_mask=mb_host_active_mask,
+
+                    communication_host_active_mask=(
+                        mb_comm_host_active_mask
+                    ),
                 )
 
                 # ==================================================
@@ -2161,22 +2532,22 @@ class MAPPO:
                     new_log_probs
                     - mb_old_log_probs
                 )
-                communication_ratio = torch.exp(
-                    new_communication_log_probs
-                    - mb_old_comm_log_probs
-                )
-                comm_surrogate1 = (
-                    communication_ratio
-                    * mb_advantages.view(-1, 1)
-                )
 
-                comm_surrogate2 = (
-                    torch.clamp(
-                        communication_ratio,
-                        1.0 - PPO_CLIP,
-                        1.0 + PPO_CLIP,
-                    )
-                    * mb_advantages.view(-1, 1)
+                # --------------------------------------------------
+                # Communication PPO term. new_communication_log_probs
+                # / mb_old_comm_log_probs can legitimately both be
+                # None (communication_field_ids absent from this
+                # buffer/minibatch -- e.g. a run with communication
+                # disabled), since both are sourced via
+                # batch.get(key, None). Guard against that instead of
+                # crashing on torch.exp(None - None): the
+                # communication loss terms simply contribute nothing
+                # when there's no communication data to train on.
+                # --------------------------------------------------
+
+                have_communication = (
+                    new_communication_log_probs is not None
+                    and mb_old_comm_log_probs is not None
                 )
 
                 # --------------------------------------------------
@@ -2208,14 +2579,14 @@ class MAPPO:
                 not_self_mask = (
                     sender_index
                     != mb_agent_ids.view(-1, 1)
-                ).to(dtype=comm_surrogate1.dtype)
+                ).to(dtype=mb_advantages.dtype)
 
                 if mb_comm_valid is not None:
 
                     comm_mask = (
                         not_self_mask
                         * mb_comm_valid
-                        .to(dtype=comm_surrogate1.dtype)
+                        .to(dtype=mb_advantages.dtype)
                         .view(-1, 1)
                     )
 
@@ -2225,53 +2596,107 @@ class MAPPO:
 
                 comm_valid_count = comm_mask.sum().clamp(min=1.0)
 
-                # --------------------------------------------------
-                # Per-(sender, receiver) credit weight.
-                #
-                # Without this, every sender a receiver heard from
-                # gets the SAME receiver-level advantage, so a
-                # positive outcome reinforces A->B, C->B, D->B
-                # identically even if only one of them actually
-                # helped. mb_trust_weights[b, sender] is receiver b's
-                # own current trust in that sender (already
-                # per-sender-per-receiver -- see communication/
-                # trust.py and the receiver-relevance fix in
-                # evaluator.py/train.py), reused here as a soft
-                # contribution weight on the advantage magnitude.
-                # It does NOT change comm_valid_count above, so
-                # low-trust senders are still trained on every valid
-                # row, just with a smaller gradient contribution
-                # rather than being excluded. Falls back to uniform
-                # (the previous behavior) if no trust signal is
-                # available this run.
-                # --------------------------------------------------
+                if have_communication:
 
-                if mb_trust_weights is not None:
+                    communication_ratio = torch.exp(
+                        new_communication_log_probs
+                        - mb_old_comm_log_probs
+                    )
+                    comm_surrogate1 = (
+                        communication_ratio
+                        * mb_advantages.view(-1, 1)
+                    )
 
-                    credit_weight = mb_trust_weights.to(
-                        dtype=comm_surrogate1.dtype
-                    ).clamp(0.0, 1.0)
+                    comm_surrogate2 = (
+                        torch.clamp(
+                            communication_ratio,
+                            1.0 - PPO_CLIP,
+                            1.0 + PPO_CLIP,
+                        )
+                        * mb_advantages.view(-1, 1)
+                    )
+
+                    # ----------------------------------------------
+                    # Per-(sender, receiver) credit weight.
+                    #
+                    # Without this, every sender a receiver heard
+                    # from gets the SAME receiver-level advantage,
+                    # so a positive outcome reinforces A->B, C->B,
+                    # D->B identically even if only one of them
+                    # actually helped. mb_trust_weights[b, sender] is
+                    # receiver b's own current trust in that sender
+                    # (already per-sender-per-receiver -- see
+                    # communication/trust.py and the receiver-
+                    # relevance fix in evaluator.py/train.py), reused
+                    # here as a soft contribution weight on the
+                    # advantage magnitude. It does NOT change
+                    # comm_valid_count above, so low-trust senders
+                    # are still trained on every valid row, just with
+                    # a smaller gradient contribution rather than
+                    # being excluded. Falls back to uniform (the
+                    # previous behavior) if no trust signal is
+                    # available this run.
+                    # ----------------------------------------------
+
+                    if mb_trust_weights is not None:
+
+                        credit_weight = mb_trust_weights.to(
+                            dtype=comm_surrogate1.dtype
+                        ).clamp(0.0, 1.0)
+
+                    else:
+
+                        credit_weight = torch.ones_like(
+                            comm_surrogate1
+                        )
+
+                    weighted_comm_mask = (
+                        comm_mask * credit_weight
+                    )
+
+                    communication_actor_loss = (
+                        -(
+                            torch.min(
+                                comm_surrogate1,
+                                comm_surrogate2,
+                            )
+                            * weighted_comm_mask
+                        ).sum()
+                        / comm_valid_count
+                    )
+
+                    # ------------------------------------------------
+                    # Entropy. Deliberately uses the HARD comm_mask,
+                    # not weighted_comm_mask: exploration is what a
+                    # currently-low-trust sender needs in order to
+                    # earn trust, so down-weighting its entropy bonus
+                    # the same way as its policy-gradient credit
+                    # would be self-defeating.
+                    # ------------------------------------------------
+
+                    comm_entropy_mask = comm_mask.to(
+                        dtype=communication_entropy.dtype
+                    )
+
+                    comm_entropy_valid_count = (
+                        comm_entropy_mask.sum().clamp(min=1.0)
+                    )
+
+                    communication_entropy_mean = (
+                        (communication_entropy * comm_entropy_mask).sum()
+                        / comm_entropy_valid_count
+                    )
 
                 else:
 
-                    credit_weight = torch.ones_like(
-                        comm_surrogate1
+                    communication_actor_loss = torch.zeros(
+                        (), device=self.device, dtype=mb_advantages.dtype
                     )
 
-                weighted_comm_mask = (
-                    comm_mask * credit_weight
-                )
+                    communication_entropy_mean = torch.zeros(
+                        (), device=self.device, dtype=mb_advantages.dtype
+                    )
 
-                communication_actor_loss = (
-                    -(
-                        torch.min(
-                            comm_surrogate1,
-                            comm_surrogate2,
-                        )
-                        * weighted_comm_mask
-                    ).sum()
-                    / comm_valid_count
-                )
                 # ==================================================
                 # Clipped objective
                 # ==================================================
@@ -2362,27 +2787,7 @@ class MAPPO:
 
                 # ==================================================
                 # Entropy
-                #
-                # Deliberately uses the HARD comm_mask, not
-                # weighted_comm_mask: exploration is what a
-                # currently-low-trust sender needs in order to earn
-                # trust, so down-weighting its entropy bonus the same
-                # way as its policy-gradient credit would be
-                # self-defeating.
                 # ==================================================
-
-                comm_entropy_mask = comm_mask.to(
-                    dtype=communication_entropy.dtype
-                )
-
-                comm_entropy_valid_count = (
-                    comm_entropy_mask.sum().clamp(min=1.0)
-                )
-
-                communication_entropy_mean = (
-                    (communication_entropy * comm_entropy_mask).sum()
-                    / comm_entropy_valid_count
-                )
 
                 entropy_loss = (
                     entropy.mean() + communication_entropy_mean
@@ -2432,23 +2837,6 @@ class MAPPO:
                 # ==================================================
 
                 total_loss.backward()
-
-                # # temp :-
-                # decoder_grad = 0.0
-                # encoder_grad = 0.0
-
-                # for name, param in self.communication.decoder.named_parameters():
-                #     if param.grad is not None:
-                #         decoder_grad += param.grad.abs().sum().item()
-
-                # for name, param in self.communication.encoder.named_parameters():
-                #     if param.grad is not None:
-                #         encoder_grad += param.grad.abs().sum().item()
-
-                # print(
-                #     f"[COMM GRAD] decoder={decoder_grad:.6e} "
-                #     f"encoder={encoder_grad:.6e}"
-                # )
 
                 # ==================================================
                 # Gradient clipping

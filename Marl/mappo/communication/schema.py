@@ -21,6 +21,29 @@ Communication flow:
           |
           v
     Communication Vector
+
+target_id has two independent vocabularies, not one
+-------------------------------------------------------
+`target_id` alone does not have a fixed meaning -- it must always be
+interpreted together with `target_type`:
+
+    target_type == HOST   -> target_id indexes the HOST vocabulary,
+                              env.get_num_targets() entries, ordered
+                              sorted(state.hosts.keys()).
+    target_type == SUBNET -> target_id indexes the SUBNET vocabulary,
+                              env.get_num_subnet_targets() entries,
+                              ordered sorted(state.subnet_name_to_cidr
+                              .keys()) (the same alphabetical CC4
+                              subnet ordering used elsewhere in this
+                              project, e.g. gnn_attention.py's
+                              SUBNET_NAME_ORDER).
+    target_type == NONE   -> target_id is ignored.
+
+These are two SEPARATE index spaces (index 3 under HOST and index 3
+under SUBNET mean unrelated things) -- encoder.py embeds them through
+two independent tables selected by target_type, and evaluator.py grades
+a HOST claim against per-host ground truth and a SUBNET claim against
+per-subnet ground truth, never mixing the two.
 """
 
 from __future__ import annotations
@@ -133,6 +156,13 @@ class Priority(IntEnum):
 class TargetType(IntEnum):
     """
     Type of entity being referenced by the message.
+
+    Determines which vocabulary target_id is drawn from -- see the
+    module docstring's "target_id has two independent vocabularies,
+    not one" section. This is not just documentation: encoder.py
+    actually routes target_id through a different embedding table
+    per TargetType, and evaluator.py grades it against different
+    ground truth per TargetType.
     """
 
     NONE = 0
@@ -173,9 +203,14 @@ class StructuredMessage:
 
     # Numerical identifier for the target.
     #
-    # The interpretation depends on target_type:
-    #   HOST   -> host index
-    #   SUBNET -> subnet index
+    # The interpretation depends on target_type, and the two cases are
+    # UNRELATED index spaces -- see the module docstring's "target_id
+    # has two independent vocabularies, not one":
+    #   HOST   -> index into the host vocabulary (env.get_num_targets())
+    #   SUBNET -> index into the subnet vocabulary
+    #             (env.get_num_subnet_targets()) -- NOT the same space
+    #             as the host vocabulary, even though both are plain
+    #             ints starting at 0
     #   NONE   -> ignored
     target_id: int = 0
 
@@ -285,7 +320,12 @@ MESSAGE_SCHEMA = {
     },
     "target_id": {
         "type": "categorical",
-        "size": None,  # Determined from CC4 host/subnet mapping.
+        # Two independent vocabularies depending on target_type -- see
+        # the module docstring. Not a single fixed size: HOST claims
+        # use env.get_num_targets() entries, SUBNET claims use
+        # env.get_num_subnet_targets() entries. Determined from the
+        # CC4 host/subnet mapping at runtime, not here.
+        "size": None,
     },
     "threat_level": {
         "type": "ordinal",
