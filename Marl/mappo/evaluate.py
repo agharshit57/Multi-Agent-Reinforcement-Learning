@@ -97,6 +97,8 @@ from .train import (
 )
 from .action_mask import compute_padded_mask
 
+from .gnn_attention import NUM_HQ_SUBNETS, MAX_HOSTS
+
 from .config import (
     NUM_AGENTS,
     OBS_DIM,
@@ -278,6 +280,7 @@ def select_action_greedy(
     action_mask,
     received_messages,
     trust_weights,
+    host_active_mask=None,
 ):
     """
     Greedy evaluation.
@@ -289,6 +292,8 @@ def select_action_greedy(
         received communication
              +
         trust
+             +
+        host_active_mask
              |
              v
           actor
@@ -298,6 +303,17 @@ def select_action_greedy(
              |
              v
         argmax action
+
+    host_active_mask: this agent's TRUE per-episode host-validity
+    mask, [NUM_HQ_SUBNETS, MAX_HOSTS] bool -- see
+    env.py.get_host_active_mask()/get_all_host_active_masks() and
+    gnn_attention.py's module docstring ("Host-level padding"). Unlike
+    select_action()/get_outgoing_message(s), actor_forward() does not
+    batch-prepare this itself (its docstring says the caller is
+    expected to already have batch-aligned data), so it is prepared
+    here with the same `_prepare_host_active_mask` helper
+    MAPPO.select_action() uses internally, against the same
+    batch_size actor_forward()'s own observation batching will use.
     """
 
     observation = ppo._to_tensor(
@@ -310,11 +326,21 @@ def select_action_greedy(
         dtype=torch.bool,
     )
 
+    batch_size = (
+        1 if observation.dim() == 1 else observation.shape[0]
+    )
+
+    prepared_host_active_mask = ppo._prepare_host_active_mask(
+        host_active_mask,
+        batch_size,
+    )
+
     logits = ppo.actor_forward(
         observations=observation,
         action_masks=action_mask,
         received_messages=received_messages,
         trust_weights=trust_weights,
+        host_active_mask=prepared_host_active_mask,
     )
 
     action = torch.argmax(
@@ -338,11 +364,18 @@ def select_action_stochastic(
     agent_id,
     received_messages,
     trust_weights,
+    host_active_mask=None,
 ):
     """
     Stochastic evaluation.
 
     This uses MAPPO's normal select_action() path.
+
+    host_active_mask: this agent's TRUE per-episode host-validity
+    mask, [NUM_HQ_SUBNETS, MAX_HOSTS] bool -- passed straight through;
+    ppo.select_action() already batch-prepares it internally (see
+    MAPPO._prepare_host_active_mask), matching train.py's usage
+    exactly.
     """
 
     action, _, _, _ = ppo.select_action(
@@ -352,6 +385,7 @@ def select_action_stochastic(
         agent_id=agent_id,
         received_messages=received_messages,
         trust_weights=trust_weights,
+        host_active_mask=host_active_mask,
     )
 
     return int(action)
@@ -497,6 +531,32 @@ def run_episodes(
                 )
 
             # ==================================================
+            # True per-episode host layout (host_active_mask)
+            #
+            # Same source, ordering, and reuse convention as
+            # train.py: read directly from the environment's true
+            # state (never inferred from alert values -- a real,
+            # currently-quiet host and a nonexistent host are
+            # bit-for-bit identical in the observation vector), once
+            # per timestep, for every agent, in the same
+            # agent_names order obs_array already uses. Constant for
+            # the whole episode; only changes across the fresh
+            # CC4Env created at each episode boundary above.
+            # ==================================================
+
+            host_active_masks = (
+                env.get_all_host_active_masks()
+            )
+
+            assert host_active_masks.shape == (
+                NUM_AGENTS, NUM_HQ_SUBNETS, MAX_HOSTS
+            ), (
+                "env.get_all_host_active_masks() returned "
+                f"{host_active_masks.shape}, expected "
+                f"{(NUM_AGENTS, NUM_HQ_SUBNETS, MAX_HOSTS)}."
+            )
+
+            # ==================================================
             # Centralized critic state
             # ==================================================
 
@@ -546,6 +606,9 @@ def run_episodes(
                             action_mask=mask,
                             received_messages=received_messages,
                             trust_weights=trust_weights,
+                            host_active_mask=host_active_masks[
+                                agent_id
+                            ],
                         )
                     )
 
@@ -560,6 +623,9 @@ def run_episodes(
                             agent_id=agent_id,
                             received_messages=received_messages,
                             trust_weights=trust_weights,
+                            host_active_mask=host_active_masks[
+                                agent_id
+                            ],
                         )
                     )
 
@@ -585,6 +651,7 @@ def run_episodes(
             ) = ppo.get_outgoing_messages(
                 obs_array,
                 return_decoded=False,
+                host_active_mask=host_active_masks,
             )
 
             # --------------------------------------------------
