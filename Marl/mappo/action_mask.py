@@ -61,12 +61,15 @@ split into four tiers:
                     not privileged red-team state.
 
     NETWORK_CONTROL BlockTrafficZone, AllowTrafficZone
-                    BlockTrafficZone is only kept valid when its source
-                    zone (`from_subnet`) currently has at least one
-                    flagged host -- an agent should not be free to sever
-                    a whole zone with no observed cause. AllowTrafficZone
-                    (undoing a block) is always left to the structural
-                    mask: restoring connectivity is never unsafe.
+                    BlockTrafficZone is suppressed only when its source
+                    zone (`from_subnet`) is both visible to this agent
+                    AND currently quiet (no flagged host). A source zone
+                    outside the agent's own observable zone is left to
+                    the structural mask: the agent has no signal there,
+                    so suppressing would permanently disable every
+                    cross-zone Block. AllowTrafficZone (undoing a block)
+                    is always left to the structural mask: restoring
+                    connectivity is never unsafe.
 
 Safety net
 ----------
@@ -206,7 +209,23 @@ def compute_adaptive_mask(env, agent_name):
                 mask[i] = False
 
         elif action_type == "BlockTrafficZone":
-            if not zone_flags.get(source_zone, False):
+            # Only suppress when the source zone is *known quiet*:
+            # the agent can see this source zone (it is one of its
+            # own) and nothing there is flagged. A source zone the
+            # agent cannot observe at all (outside its own zone) is
+            # left to the structural mask -- suppressing it would
+            # permanently disable every cross-zone Block, since an
+            # agent's alert flags only ever cover its own zone.
+            source_key = (
+                str(source_zone).lower()
+                if source_zone is not None
+                else None
+            )
+            if (
+                source_key is not None
+                and source_key in zone_flags
+                and not zone_flags[source_key]
+            ):
                 mask[i] = False
 
         # SAFE_ACTIONS, INVESTIGATIVE_ACTIONS and AllowTrafficZone are
@@ -302,7 +321,16 @@ def explain_mask(env, agent_name):
                 )
 
         elif action_type == "BlockTrafficZone":
-            if not zone_flags.get(source_zone, False):
+            source_key = (
+                str(source_zone).lower()
+                if source_zone is not None
+                else None
+            )
+            if (
+                source_key is not None
+                and source_key in zone_flags
+                and not zone_flags[source_key]
+            ):
                 mask[i] = False
                 reasons[i] = (
                     f"{labels[i]}: suppressed -- source zone '{source_zone}' "

@@ -1,0 +1,18 @@
+{
+  "$schema": "declared-fleet-v1",
+  "hosts": [
+    {
+      "hostname": "srv-01",
+      "ips": ["192.168.29.11"],
+      "macs": [],
+      "role": "server",
+      "segment": "srv"
+    },
+    {
+      "hostname": "wks-02",
+      "ips": ["192.168.29.12"],
+      "role": "workstation",
+      "segment": "office"
+    }
+  ]
+}

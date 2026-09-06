@@ -1,0 +1,409 @@
+<Window x:Class="CyberMarl.Deployment.App.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Cyber MARL — Real-World SOC Console" Height="740" Width="1140"
+        Background="{StaticResource BgBrush}">
+  <!-- Explicit backgrounds everywhere: implicit Window styling alone
+       left the main area on the OS default (white). -->
+  <DockPanel Background="{StaticResource BgBrush}">
+    <!-- Status bar: always-visible connection truth. -->
+    <StatusBar DockPanel.Dock="Bottom">
+      <StatusBarItem>
+        <StackPanel Orientation="Horizontal">
+          <TextBlock Text="●" FontSize="13" Margin="0,0,6,0">
+            <TextBlock.Style>
+              <Style TargetType="TextBlock">
+                <Setter Property="Foreground" Value="{StaticResource DangerBrush}" />
+                <Style.Triggers>
+                  <DataTrigger Binding="{Binding IsConnected}" Value="True">
+                    <Setter Property="Foreground" Value="{StaticResource OkBrush}" />
+                  </DataTrigger>
+                </Style.Triggers>
+              </Style>
+            </TextBlock.Style>
+          </TextBlock>
+          <TextBlock Text="{Binding Health}" />
+        </StackPanel>
+      </StatusBarItem>
+      <Separator />
+      <StatusBarItem>
+        <TextBlock Text="{Binding MappingSummary}" Foreground="{StaticResource MutedBrush}" />
+      </StatusBarItem>
+    </StatusBar>
+
+    <!-- Sidebar navigation (replaces the old tab strip). -->
+    <Border DockPanel.Dock="Left" Width="215" Background="{StaticResource SurfaceBrush}"
+            BorderBrush="{StaticResource BorderBrush}" BorderThickness="0,0,1,0">
+      <DockPanel Margin="6,10">
+        <StackPanel DockPanel.Dock="Top" Orientation="Vertical" Margin="6,0,6,10">
+          <TextBlock Text="Cyber MARL" FontSize="17" FontWeight="Bold" />
+          <TextBlock Text="Real-World SOC" Style="{StaticResource MutedText}" />
+        </StackPanel>
+        <StackPanel DockPanel.Dock="Bottom" Orientation="Vertical" Margin="6,0,6,4">
+          <TextBlock Text="Mode" Style="{StaticResource MutedText}" Margin="6,0,0,2" />
+          <UniformGrid Columns="2">
+            <Button Content="Shadow" Command="{Binding ModeCommand}" CommandParameter="Shadow">
+              <Button.Style>
+                <Style TargetType="Button" BasedOn="{StaticResource ModeButton}">
+                  <Style.Triggers>
+                    <DataTrigger Binding="{Binding SelectedMode}" Value="Shadow">
+                      <Setter Property="Background" Value="{StaticResource ActiveBrush}" />
+                      <Setter Property="Foreground" Value="#FFFFFF" />
+                      <Setter Property="FontWeight" Value="SemiBold" />
+                    </DataTrigger>
+                  </Style.Triggers>
+                </Style>
+              </Button.Style>
+            </Button>
+            <Button Content="Mock" Command="{Binding ModeCommand}" CommandParameter="Mock">
+              <Button.Style>
+                <Style TargetType="Button" BasedOn="{StaticResource ModeButton}">
+                  <Style.Triggers>
+                    <DataTrigger Binding="{Binding SelectedMode}" Value="Mock">
+                      <Setter Property="Background" Value="{StaticResource ActiveBrush}" />
+                      <Setter Property="Foreground" Value="#FFFFFF" />
+                      <Setter Property="FontWeight" Value="SemiBold" />
+                    </DataTrigger>
+                  </Style.Triggers>
+                </Style>
+              </Button.Style>
+            </Button>
+            <Button Content="Supervised" Command="{Binding ModeCommand}" CommandParameter="Supervised">
+              <Button.Style>
+                <Style TargetType="Button" BasedOn="{StaticResource ModeButton}">
+                  <Style.Triggers>
+                    <DataTrigger Binding="{Binding SelectedMode}" Value="Supervised">
+                      <Setter Property="Background" Value="{StaticResource ActiveBrush}" />
+                      <Setter Property="Foreground" Value="#FFFFFF" />
+                      <Setter Property="FontWeight" Value="SemiBold" />
+                    </DataTrigger>
+                  </Style.Triggers>
+                </Style>
+              </Button.Style>
+            </Button>
+            <Button Content="Live" Command="{Binding ModeCommand}" CommandParameter="Live">
+              <Button.Style>
+                <Style TargetType="Button" BasedOn="{StaticResource ModeButton}">
+                  <Style.Triggers>
+                    <DataTrigger Binding="{Binding SelectedMode}" Value="Live">
+                      <Setter Property="Background" Value="#7A2E2E" />
+                      <Setter Property="Foreground" Value="#FFFFFF" />
+                      <Setter Property="FontWeight" Value="SemiBold" />
+                    </DataTrigger>
+                  </Style.Triggers>
+                </Style>
+              </Button.Style>
+            </Button>
+          </UniformGrid>
+          <TextBlock Text="Destructive ops always need approval. Live executes for real."
+                     Style="{StaticResource MutedText}" FontSize="11" Margin="6,6,6,0" />
+        </StackPanel>
+        <StackPanel Orientation="Vertical">
+          <Button Content="Dashboard" Command="{Binding NavCommand}" CommandParameter="0">
+            <Button.Style>
+              <Style TargetType="Button" BasedOn="{StaticResource SidebarButton}">
+                <Style.Triggers>
+                  <DataTrigger Binding="{Binding SidebarIndex}" Value="0">
+                    <Setter Property="Background" Value="{StaticResource ActiveBrush}" />
+                    <Setter Property="Foreground" Value="#FFFFFF" />
+                    <Setter Property="FontWeight" Value="SemiBold" />
+                  </DataTrigger>
+                </Style.Triggers>
+              </Style>
+            </Button.Style>
+          </Button>
+          <Button Content="Real Assets" Command="{Binding NavCommand}" CommandParameter="1">
+            <Button.Style>
+              <Style TargetType="Button" BasedOn="{StaticResource SidebarButton}">
+                <Style.Triggers>
+                  <DataTrigger Binding="{Binding SidebarIndex}" Value="1">
+                    <Setter Property="Background" Value="{StaticResource ActiveBrush}" />
+                    <Setter Property="Foreground" Value="#FFFFFF" />
+                    <Setter Property="FontWeight" Value="SemiBold" />
+                  </DataTrigger>
+                </Style.Triggers>
+              </Style>
+            </Button.Style>
+          </Button>
+          <Button Content="{Binding ActionsNavLabel}" Command="{Binding NavCommand}" CommandParameter="2">
+            <Button.Style>
+              <Style TargetType="Button" BasedOn="{StaticResource SidebarButton}">
+                <Style.Triggers>
+                  <DataTrigger Binding="{Binding SidebarIndex}" Value="2">
+                    <Setter Property="Background" Value="{StaticResource ActiveBrush}" />
+                    <Setter Property="Foreground" Value="#FFFFFF" />
+                    <Setter Property="FontWeight" Value="SemiBold" />
+                  </DataTrigger>
+                </Style.Triggers>
+              </Style>
+            </Button.Style>
+          </Button>
+          <Button Content="Policy Mapping" Command="{Binding NavCommand}" CommandParameter="3">
+            <Button.Style>
+              <Style TargetType="Button" BasedOn="{StaticResource SidebarButton}">
+                <Style.Triggers>
+                  <DataTrigger Binding="{Binding SidebarIndex}" Value="3">
+                    <Setter Property="Background" Value="{StaticResource ActiveBrush}" />
+                    <Setter Property="Foreground" Value="#FFFFFF" />
+                    <Setter Property="FontWeight" Value="SemiBold" />
+                  </DataTrigger>
+                </Style.Triggers>
+              </Style>
+            </Button.Style>
+          </Button>
+          <Button Content="Audit" Command="{Binding NavCommand}" CommandParameter="4">
+            <Button.Style>
+              <Style TargetType="Button" BasedOn="{StaticResource SidebarButton}">
+                <Style.Triggers>
+                  <DataTrigger Binding="{Binding SidebarIndex}" Value="4">
+                    <Setter Property="Background" Value="{StaticResource ActiveBrush}" />
+                    <Setter Property="Foreground" Value="#FFFFFF" />
+                    <Setter Property="FontWeight" Value="SemiBold" />
+                  </DataTrigger>
+                </Style.Triggers>
+              </Style>
+            </Button.Style>
+          </Button>
+          <Button Content="Telemetry &amp; Model" Command="{Binding NavCommand}" CommandParameter="5">
+            <Button.Style>
+              <Style TargetType="Button" BasedOn="{StaticResource SidebarButton}">
+                <Style.Triggers>
+                  <DataTrigger Binding="{Binding SidebarIndex}" Value="5">
+                    <Setter Property="Background" Value="{StaticResource ActiveBrush}" />
+                    <Setter Property="Foreground" Value="#FFFFFF" />
+                    <Setter Property="FontWeight" Value="SemiBold" />
+                  </DataTrigger>
+                </Style.Triggers>
+              </Style>
+            </Button.Style>
+          </Button>
+        </StackPanel>
+      </DockPanel>
+    </Border>
+
+    <!-- Main area: header + pages (tab headers hidden; sidebar drives it). -->
+    <DockPanel Margin="14,10,14,10" Background="{StaticResource BgBrush}">
+      <StackPanel DockPanel.Dock="Top" Orientation="Vertical">
+        <TextBlock Text="{Binding PageTitle}" Style="{StaticResource PageTitle}" />
+        <TextBlock Text="{Binding Banner}" Style="{StaticResource MutedText}" Margin="0,0,0,8" />
+        <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+          <Button Content="Connect" Command="{Binding ConnectCommand}" Style="{StaticResource PrimaryButton}" />
+          <Button Content="Run cycle" Command="{Binding RunCycleCommand}" Style="{StaticResource PrimaryButton}" />
+        </StackPanel>
+      </StackPanel>
+
+      <TabControl SelectedIndex="{Binding SidebarIndex, Mode=TwoWay}">
+        <!-- 0 Dashboard: tells first-time operators exactly what to do. -->
+        <TabItem Visibility="Collapsed">
+          <ScrollViewer VerticalScrollBarVisibility="Auto">
+            <StackPanel Orientation="Vertical">
+              <UniformGrid Columns="4">
+                <Border Style="{StaticResource Card}" Margin="0,0,8,10">
+                  <StackPanel>
+                    <TextBlock Text="{Binding ConnectionCard}" FontSize="18" FontWeight="SemiBold" />
+                    <TextBlock Text="Sidecar" Style="{StaticResource MutedText}" />
+                  </StackPanel>
+                </Border>
+                <Border Style="{StaticResource Card}" Margin="4,0,8,10">
+                  <StackPanel>
+                    <TextBlock Text="{Binding ContractCard}" FontSize="13" FontWeight="SemiBold" TextWrapping="Wrap" />
+                    <TextBlock Text="Frozen contract" Style="{StaticResource MutedText}" />
+                  </StackPanel>
+                </Border>
+                <Border Style="{StaticResource Card}" Margin="4,0,8,10">
+                  <StackPanel>
+                    <TextBlock Text="{Binding AssetsCard}" FontSize="18" FontWeight="SemiBold" />
+                    <TextBlock Text="Real machines" Style="{StaticResource MutedText}" />
+                  </StackPanel>
+                </Border>
+                <Border Style="{StaticResource Card}" Margin="4,0,0,10">
+                  <StackPanel>
+                    <TextBlock Text="{Binding PendingCard}" FontSize="18" FontWeight="SemiBold" />
+                    <TextBlock Text="Approvals waiting" Style="{StaticResource MutedText}" />
+                  </StackPanel>
+                </Border>
+              </UniformGrid>
+
+              <Border Style="{StaticResource Card}">
+                <StackPanel>
+                  <TextBlock Text="Getting started — do these in order" Style="{StaticResource SectionTitle}" Margin="0,0,0,8" />
+                  <Grid Margin="0,2">
+                    <Grid.ColumnDefinitions>
+                      <ColumnDefinition Width="*" />
+                      <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Grid.Column="0" Text="{Binding Step1Text}" VerticalAlignment="Center" TextWrapping="Wrap" />
+                    <Button Grid.Column="1" Content="1. Connect" Command="{Binding ConnectCommand}" />
+                  </Grid>
+                  <Grid Margin="0,2">
+                    <Grid.ColumnDefinitions>
+                      <ColumnDefinition Width="*" />
+                      <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Grid.Column="0" Text="{Binding Step2Text}" VerticalAlignment="Center" TextWrapping="Wrap" />
+                    <Button Grid.Column="1" Content="2. Discover" Command="{Binding RefreshLocalCommand}" />
+                  </Grid>
+                  <Grid Margin="0,2">
+                    <Grid.ColumnDefinitions>
+                      <ColumnDefinition Width="*" />
+                      <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Grid.Column="0" Text="{Binding Step3Text}" VerticalAlignment="Center" TextWrapping="Wrap" />
+                    <Button Grid.Column="1" Content="3. Run cycle" Command="{Binding RunCycleCommand}" Style="{StaticResource PrimaryButton}" />
+                  </Grid>
+                </StackPanel>
+              </Border>
+
+              <Border Style="{StaticResource Card}">
+                <StackPanel>
+                  <TextBlock Text="What am I looking at?" Style="{StaticResource SectionTitle}" Margin="0,0,0,4" />
+                  <TextBlock Style="{StaticResource MutedText}"
+                             Text="Real Assets shows your physical machines — that is the infrastructure. The trained model thinks in CC4 simulation slots, so each cycle maps your machines into that fixed geometry; that mapping lives only under Policy Mapping and is never infrastructure. Actions proposes real operations; anything risky waits for your approval. Nothing here executes on its own." />
+                  <TextBlock Text="Start the sidecar first (Terminal 1), then launch this app with these set (Terminal 2):"
+                             Style="{StaticResource MutedText}" Margin="0,10,0,4" />
+                  <TextBox FontFamily="Consolas" FontSize="12" IsReadOnly="True" AcceptsReturn="True"
+                           Text="set INFERENCE_TOKEN=dev-token-123&#x0a;python -m Deployement.sidecar --port 8410 --policy mock --mode shadow&#x0a;&#x0a;set INFERENCE_URL=http://127.0.0.1:8410&#x0a;set INFERENCE_TOKEN=dev-token-123" />
+                </StackPanel>
+              </Border>
+            </StackPanel>
+          </ScrollViewer>
+        </TabItem>
+
+        <!-- 1 Real Assets: physical infrastructure only. -->
+        <TabItem Visibility="Collapsed">
+          <DockPanel>
+            <TextBlock DockPanel.Dock="Top" Style="{StaticResource MutedText}"
+                       Text="Physical machines under protection. Coverage tells you what is actually sensed: covered-local/agent means real telemetry; uncovered means declared but unsensed (reads STALE, never healthy); observed-arp-only means seen on the wire and nothing more. Select a row to expand services, interfaces, links and coverage detail." />
+            <DataGrid ItemsSource="{Binding Assets}">
+              <DataGrid.Columns>
+                <DataGridTextColumn Header="Hostname" Binding="{Binding Hostname}" Width="*" />
+                <DataGridTextColumn Header="Asset ID" Binding="{Binding AssetId}" Width="*" />
+                <DataGridTextColumn Header="Address" Binding="{Binding Address}" Width="*" />
+                <DataGridTextColumn Header="Coverage" Binding="{Binding Coverage}" Width="Auto" />
+                <DataGridTextColumn Header="Segment" Binding="{Binding Segment}" Width="Auto" />
+                <DataGridTextColumn Header="Policy footnote (technical)" Binding="{Binding PolicySlot}" Width="2*" />
+              </DataGrid.Columns>
+              <DataGrid.RowDetailsTemplate>
+                <DataTemplate>
+                  <StackPanel Margin="20,6,6,10" Orientation="Vertical">
+                    <TextBlock Style="{StaticResource MutedText}">
+                      <Run Text="OS: " /><Run Text="{Binding Os}" />
+                      <Run Text="   MAC: " /><Run Text="{Binding MacsText}" />
+                    </TextBlock>
+                    <TextBlock Style="{StaticResource MutedText}" TextWrapping="Wrap">
+                      <Run Text="Services: " /><Run Text="{Binding ServicesText}" />
+                    </TextBlock>
+                    <TextBlock Style="{StaticResource MutedText}" TextWrapping="Wrap">
+                      <Run Text="Links: " /><Run Text="{Binding LinksText}" />
+                    </TextBlock>
+                    <TextBlock Style="{StaticResource MutedText}" TextWrapping="Wrap">
+                      <Run Text="Coverage: " /><Run Text="{Binding CoverageDetail}" />
+                    </TextBlock>
+                  </StackPanel>
+                </DataTemplate>
+              </DataGrid.RowDetailsTemplate>
+            </DataGrid>
+          </DockPanel>
+        </TabItem>
+
+        <!-- 2 Actions: real plans + approvals + refusals. -->
+        <TabItem Visibility="Collapsed">
+          <DockPanel>
+            <TextBlock DockPanel.Dock="Top" Style="{StaticResource MutedText}"
+                       Text="Plans from the last cycle. Select a queued row, then Approve. Blocked rows are refusals (no physical target) and can never execute. Approvals run on the sidecar — Live mode asks you to confirm because it executes for real." />
+            <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" Margin="0,8,0,0">
+              <Button Content="Approve selected" Command="{Binding ApproveCommand}"
+                      CommandParameter="{Binding SelectedAction}" Style="{StaticResource PrimaryButton}" />
+            </StackPanel>
+            <DataGrid ItemsSource="{Binding Actions}" SelectedItem="{Binding SelectedAction, Mode=TwoWay}">
+              <DataGrid.Columns>
+                <DataGridTextColumn Header="Plan" Binding="{Binding Description}" Width="3*" />
+                <DataGridTextColumn Header="Risk" Binding="{Binding Risk}" Width="Auto" />
+                <DataGridTextColumn Header="Status" Binding="{Binding Status}" Width="Auto">
+                  <DataGridTextColumn.ElementStyle>
+                    <Style TargetType="TextBlock">
+                      <Setter Property="Foreground" Value="{StaticResource TextBrush}" />
+                      <Style.Triggers>
+                        <DataTrigger Binding="{Binding Status}" Value="blocked">
+                          <Setter Property="Foreground" Value="{StaticResource DangerBrush}" />
+                        </DataTrigger>
+                        <DataTrigger Binding="{Binding Status}" Value="queued">
+                          <Setter Property="Foreground" Value="{StaticResource WarnBrush}" />
+                        </DataTrigger>
+                        <DataTrigger Binding="{Binding Status}" Value="approved">
+                          <Setter Property="Foreground" Value="{StaticResource OkBrush}" />
+                        </DataTrigger>
+                      </Style.Triggers>
+                    </Style>
+                  </DataGridTextColumn.ElementStyle>
+                </DataGridTextColumn>
+                <DataGridTextColumn Header="Refusal reason" Binding="{Binding BlockReason}" Width="2*" />
+              </DataGrid.Columns>
+            </DataGrid>
+          </DockPanel>
+        </TabItem>
+
+        <!-- 3 Policy Mapping: quarantined technical view. -->
+        <TabItem Visibility="Collapsed">
+          <DockPanel>
+            <Border DockPanel.Dock="Top" Background="#3A2A10" Padding="10" Margin="0,0,0,8" CornerRadius="8">
+              <TextBlock Foreground="#FFC65C" TextWrapping="Wrap"
+                         Text="Technical view only: how real assets were placed into the frozen 112-slot CC4 policy geometry so the trained checkpoint can serve. These slot names are NOT infrastructure — never treat them as hosts, zones, or addresses." />
+            </Border>
+            <TextBlock DockPanel.Dock="Top" Text="{Binding MappingSummary}" Style="{StaticResource MutedText}" />
+            <DataGrid ItemsSource="{Binding Bindings}">
+              <DataGrid.Columns>
+                <DataGridTextColumn Header="Real asset" Binding="{Binding AssetId}" Width="*" />
+                <DataGridTextColumn Header="Policy agent (technical)" Binding="{Binding Agent}" Width="*" />
+                <DataGridTextColumn Header="Policy slot (technical)" Binding="{Binding PolicySlot}" Width="2*" />
+              </DataGrid.Columns>
+            </DataGrid>
+          </DockPanel>
+        </TabItem>
+
+        <!-- 4 Audit. -->
+        <TabItem Visibility="Collapsed">
+          <DockPanel>
+            <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" Margin="0,8,0,0">
+              <Button Content="Clear view" Command="{Binding ClearAuditCommand}" />
+            </StackPanel>
+            <DataGrid ItemsSource="{Binding Audit}">
+              <DataGrid.Columns>
+                <DataGridTextColumn Header="Time" Binding="{Binding Time}" Width="Auto" />
+                <DataGridTextColumn Header="Event" Binding="{Binding Event}" Width="Auto" />
+                <DataGridTextColumn Header="Operation" Binding="{Binding Operation}" Width="*" />
+                <DataGridTextColumn Header="Target (real)" Binding="{Binding Target}" Width="*" />
+                <DataGridTextColumn Header="Details" Binding="{Binding Details}" Width="2*" />
+              </DataGrid.Columns>
+            </DataGrid>
+          </DockPanel>
+        </TabItem>
+
+        <!-- 5 Telemetry & Model. -->
+        <TabItem Visibility="Collapsed">
+          <ScrollViewer VerticalScrollBarVisibility="Auto">
+            <StackPanel>
+              <Border Style="{StaticResource Card}">
+                <StackPanel>
+                  <TextBlock Text="Sidecar contract (frozen checkpoint geometry)" Style="{StaticResource SectionTitle}" Margin="0,0,0,4" />
+                  <TextBlock Text="{Binding Contract}" />
+                  <TextBlock Text="Sidecar health" Style="{StaticResource SectionTitle}" />
+                  <TextBlock Text="{Binding Health}" />
+                  <TextBlock Text="Mapping" Style="{StaticResource SectionTitle}" />
+                  <TextBlock Text="{Binding MappingSummary}" TextWrapping="Wrap" />
+                </StackPanel>
+              </Border>
+              <Border Style="{StaticResource Card}">
+                <StackPanel>
+                  <TextBlock Text="About this app" Style="{StaticResource SectionTitle}" Margin="0,0,0,4" />
+                  <TextBlock Style="{StaticResource MutedText}" TextWrapping="Wrap"
+                             Text="Weights stay in Python (MAPPO/PyTorch sidecar) — this app ships no model code, computes no observations, and performs no enforcement in-process. Approvals travel to the sidecar, which owns the single-ownership queue, the validator gates, and the backends." />
+                </StackPanel>
+              </Border>
+            </StackPanel>
+          </ScrollViewer>
+        </TabItem>
+      </TabControl>
+    </DockPanel>
+  </DockPanel>
+</Window>

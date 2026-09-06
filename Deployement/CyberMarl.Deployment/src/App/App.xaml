@@ -1,0 +1,239 @@
+<Application x:Class="CyberMarl.Deployment.App.App"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+  <!-- NOTE: no StartupUri on purpose (see App.xaml.cs single-instance
+       startup). Adding one back opens a second window. -->
+  <Application.Resources>
+    <ResourceDictionary>
+      <!-- Readable dark SOC theme. Every foreground on every background
+           below is >= ~4.5:1 contrast. -->
+      <Color x:Key="Bg">#0B0F14</Color>
+      <Color x:Key="Surface">#121924</Color>
+      <Color x:Key="Surface2">#1A2433</Color>
+      <Color x:Key="Hover">#223150</Color>
+      <Color x:Key="Active">#1E3A5F</Color>
+      <Color x:Key="Border">#2B3A4F</Color>
+      <Color x:Key="Text">#F2F5F9</Color>
+      <Color x:Key="Muted">#A9B6C6</Color>
+      <Color x:Key="Accent">#4DA3FF</Color>
+      <Color x:Key="Danger">#FF7070</Color>
+      <Color x:Key="Warn">#FFB020</Color>
+      <Color x:Key="Ok">#3FD68C</Color>
+
+      <SolidColorBrush x:Key="BgBrush" Color="{StaticResource Bg}" />
+      <SolidColorBrush x:Key="SurfaceBrush" Color="{StaticResource Surface}" />
+      <SolidColorBrush x:Key="Surface2Brush" Color="{StaticResource Surface2}" />
+      <SolidColorBrush x:Key="TextBrush" Color="{StaticResource Text}" />
+      <SolidColorBrush x:Key="MutedBrush" Color="{StaticResource Muted}" />
+      <SolidColorBrush x:Key="AccentBrush" Color="{StaticResource Accent}" />
+      <SolidColorBrush x:Key="DangerBrush" Color="{StaticResource Danger}" />
+      <SolidColorBrush x:Key="WarnBrush" Color="{StaticResource Warn}" />
+      <SolidColorBrush x:Key="OkBrush" Color="{StaticResource Ok}" />
+      <SolidColorBrush x:Key="ActiveBrush" Color="{StaticResource Active}" />
+      <SolidColorBrush x:Key="HoverBrush" Color="{StaticResource Hover}" />
+      <SolidColorBrush x:Key="BorderBrush" Color="{StaticResource Border}" />
+
+      <Style TargetType="Window">
+        <Setter Property="Background" Value="{StaticResource BgBrush}" />
+        <Setter Property="Foreground" Value="{StaticResource TextBrush}" />
+        <Setter Property="FontFamily" Value="Segoe UI" />
+        <Setter Property="FontSize" Value="13" />
+      </Style>
+
+      <Style TargetType="TextBlock">
+        <Setter Property="Foreground" Value="{StaticResource TextBrush}" />
+      </Style>
+
+      <Style x:Key="PageTitle" TargetType="TextBlock">
+        <Setter Property="FontSize" Value="20" />
+        <Setter Property="FontWeight" Value="SemiBold" />
+        <Setter Property="Foreground" Value="{StaticResource TextBrush}" />
+        <Setter Property="Margin" Value="0,0,0,4" />
+      </Style>
+
+      <Style x:Key="SectionTitle" TargetType="TextBlock">
+        <Setter Property="FontSize" Value="14" />
+        <Setter Property="FontWeight" Value="SemiBold" />
+        <Setter Property="Foreground" Value="{StaticResource TextBrush}" />
+        <Setter Property="Margin" Value="0,12,0,4" />
+      </Style>
+
+      <Style x:Key="MutedText" TargetType="TextBlock">
+        <Setter Property="Foreground" Value="{StaticResource MutedBrush}" />
+        <Setter Property="TextWrapping" Value="Wrap" />
+      </Style>
+
+      <Style x:Key="Card" TargetType="Border">
+        <Setter Property="Background" Value="{StaticResource SurfaceBrush}" />
+        <Setter Property="BorderBrush" Value="{StaticResource BorderBrush}" />
+        <Setter Property="BorderThickness" Value="1" />
+        <Setter Property="CornerRadius" Value="8" />
+        <Setter Property="Padding" Value="12" />
+        <Setter Property="Margin" Value="0,0,0,10" />
+      </Style>
+
+      <!-- Full template: the default button chrome ignores Background
+           when disabled (white boxes). Every state is painted here. -->
+      <Style TargetType="Button">
+        <Setter Property="Background" Value="{StaticResource Surface2Brush}" />
+        <Setter Property="Foreground" Value="{StaticResource TextBrush}" />
+        <Setter Property="BorderBrush" Value="{StaticResource BorderBrush}" />
+        <Setter Property="BorderThickness" Value="1" />
+        <Setter Property="Padding" Value="12,7" />
+        <Setter Property="Margin" Value="4" />
+        <Setter Property="Cursor" Value="Hand" />
+        <Setter Property="SnapsToDevicePixels" Value="True" />
+        <Setter Property="Template">
+          <Setter.Value>
+            <ControlTemplate TargetType="Button">
+              <Border x:Name="Chrome" Background="{TemplateBinding Background}"
+                      BorderBrush="{TemplateBinding BorderBrush}"
+                      BorderThickness="{TemplateBinding BorderThickness}"
+                      CornerRadius="6" Padding="{TemplateBinding Padding}"
+                      SnapsToDevicePixels="True">
+                <ContentPresenter HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
+                                  VerticalAlignment="{TemplateBinding VerticalContentAlignment}"
+                                  RecognizesAccessKey="True" />
+              </Border>
+              <ControlTemplate.Triggers>
+                <Trigger Property="IsMouseOver" Value="True">
+                  <Setter TargetName="Chrome" Property="Background" Value="{StaticResource HoverBrush}" />
+                </Trigger>
+                <Trigger Property="IsPressed" Value="True">
+                  <Setter TargetName="Chrome" Property="Background" Value="{StaticResource ActiveBrush}" />
+                </Trigger>
+                <Trigger Property="IsEnabled" Value="False">
+                  <Setter TargetName="Chrome" Property="Background" Value="{StaticResource SurfaceBrush}" />
+                  <Setter TargetName="Chrome" Property="BorderBrush" Value="{StaticResource BorderBrush}" />
+                  <Setter Property="Foreground" Value="{StaticResource MutedBrush}" />
+                </Trigger>
+              </ControlTemplate.Triggers>
+            </ControlTemplate>
+          </Setter.Value>
+        </Setter>
+      </Style>
+
+      <Style x:Key="PrimaryButton" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
+        <Setter Property="Background" Value="#1D4E89" />
+        <Setter Property="BorderBrush" Value="#2F6BB0" />
+        <Setter Property="FontWeight" Value="SemiBold" />
+      </Style>
+
+      <Style x:Key="SidebarButton" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
+        <Setter Property="Background" Value="Transparent" />
+        <Setter Property="BorderThickness" Value="0" />
+        <Setter Property="HorizontalContentAlignment" Value="Left" />
+        <Setter Property="Padding" Value="12,9" />
+        <Setter Property="Margin" Value="6,2" />
+        <Setter Property="FontSize" Value="14" />
+        <Setter Property="Foreground" Value="#C7D2E0" />
+      </Style>
+
+      <Style x:Key="ModeButton" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
+        <Setter Property="Padding" Value="6,5" />
+        <Setter Property="Margin" Value="3" />
+        <Setter Property="FontSize" Value="12" />
+        <Setter Property="HorizontalContentAlignment" Value="Center" />
+      </Style>
+
+      <Style TargetType="TextBox">
+        <Setter Property="Background" Value="#0E1520" />
+        <Setter Property="Foreground" Value="{StaticResource TextBrush}" />
+        <Setter Property="CaretBrush" Value="{StaticResource TextBrush}" />
+        <Setter Property="BorderBrush" Value="{StaticResource BorderBrush}" />
+        <Setter Property="Padding" Value="8,6" />
+        <Setter Property="SelectionBrush" Value="{StaticResource ActiveBrush}" />
+      </Style>
+
+      <Style TargetType="ComboBox">
+        <Setter Property="Background" Value="{StaticResource Surface2Brush}" />
+        <Setter Property="Foreground" Value="{StaticResource TextBrush}" />
+        <Setter Property="BorderBrush" Value="{StaticResource BorderBrush}" />
+        <Setter Property="Padding" Value="8,5" />
+      </Style>
+
+      <Style TargetType="ComboBoxItem">
+        <Setter Property="Background" Value="{StaticResource SurfaceBrush}" />
+        <Setter Property="Foreground" Value="{StaticResource TextBrush}" />
+        <Setter Property="Padding" Value="8,5" />
+        <Style.Triggers>
+          <Trigger Property="IsHighlighted" Value="True">
+            <Setter Property="Background" Value="{StaticResource ActiveBrush}" />
+            <Setter Property="Foreground" Value="#FFFFFF" />
+          </Trigger>
+          <Trigger Property="IsSelected" Value="True">
+            <Setter Property="Background" Value="{StaticResource ActiveBrush}" />
+            <Setter Property="Foreground" Value="#FFFFFF" />
+          </Trigger>
+        </Style.Triggers>
+      </Style>
+
+      <Style TargetType="DataGrid">
+        <Setter Property="Background" Value="{StaticResource SurfaceBrush}" />
+        <Setter Property="Foreground" Value="{StaticResource TextBrush}" />
+        <Setter Property="RowBackground" Value="{StaticResource SurfaceBrush}" />
+        <Setter Property="AlternatingRowBackground" Value="#131C29" />
+        <Setter Property="GridLinesVisibility" Value="None" />
+        <Setter Property="HeadersVisibility" Value="Column" />
+        <Setter Property="AutoGenerateColumns" Value="False" />
+        <Setter Property="IsReadOnly" Value="True" />
+        <Setter Property="RowHeaderWidth" Value="0" />
+        <Setter Property="BorderBrush" Value="{StaticResource BorderBrush}" />
+        <Setter Property="Margin" Value="0,8,0,0" />
+      </Style>
+
+      <Style TargetType="DataGridColumnHeader">
+        <Setter Property="Background" Value="{StaticResource Surface2Brush}" />
+        <Setter Property="Foreground" Value="{StaticResource TextBrush}" />
+        <Setter Property="FontWeight" Value="SemiBold" />
+        <Setter Property="Padding" Value="8,7" />
+        <Setter Property="BorderThickness" Value="0,0,0,1" />
+        <Setter Property="BorderBrush" Value="{StaticResource BorderBrush}" />
+      </Style>
+
+      <Style TargetType="DataGridCell">
+        <Setter Property="Background" Value="Transparent" />
+        <Setter Property="Foreground" Value="{StaticResource TextBrush}" />
+        <Setter Property="Padding" Value="8,5" />
+        <Setter Property="BorderThickness" Value="0" />
+        <Style.Triggers>
+          <Trigger Property="IsSelected" Value="True">
+            <Setter Property="Background" Value="{StaticResource ActiveBrush}" />
+            <Setter Property="Foreground" Value="#FFFFFF" />
+          </Trigger>
+        </Style.Triggers>
+      </Style>
+
+      <Style TargetType="DataGridRow">
+        <Setter Property="Background" Value="Transparent" />
+        <Setter Property="Foreground" Value="{StaticResource TextBrush}" />
+        <Style.Triggers>
+          <Trigger Property="IsSelected" Value="True">
+            <Setter Property="Background" Value="{StaticResource ActiveBrush}" />
+          </Trigger>
+        </Style.Triggers>
+      </Style>
+
+      <Style TargetType="TabControl">
+        <Setter Property="Background" Value="Transparent" />
+        <Setter Property="BorderThickness" Value="0" />
+      </Style>
+
+      <Style TargetType="StatusBar">
+        <Setter Property="Background" Value="{StaticResource SurfaceBrush}" />
+        <Setter Property="Foreground" Value="{StaticResource TextBrush}" />
+      </Style>
+
+      <Style TargetType="StatusBarItem">
+        <Setter Property="Foreground" Value="{StaticResource TextBrush}" />
+      </Style>
+
+      <Style TargetType="ToolTip">
+        <Setter Property="Background" Value="{StaticResource Surface2Brush}" />
+        <Setter Property="Foreground" Value="{StaticResource TextBrush}" />
+        <Setter Property="BorderBrush" Value="{StaticResource BorderBrush}" />
+        <Setter Property="Padding" Value="8,6" />
+      </Style>
+    </ResourceDictionary>
+  </Application.Resources>
+</Application>

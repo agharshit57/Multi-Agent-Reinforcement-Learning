@@ -1,0 +1,697 @@
+{
+  "agents": {
+    "blue_agent_0": {
+      "hosts": [
+        {
+          "cc4": "restricted_zone_a_subnet_server_host_0",
+          "ip": "10.0.7.11",
+          "hostname": "restricted-zone-a-server-host-0",
+          "role": "server"
+        },
+        {
+          "cc4": "restricted_zone_a_subnet_server_host_1",
+          "ip": "10.0.7.12",
+          "hostname": "restricted-zone-a-server-host-1",
+          "role": "server"
+        },
+        {
+          "cc4": "restricted_zone_a_subnet_server_host_2",
+          "ip": "10.0.7.13",
+          "hostname": "restricted-zone-a-server-host-2",
+          "role": "server"
+        },
+        {
+          "cc4": "restricted_zone_a_subnet_server_host_3",
+          "ip": "10.0.7.14",
+          "hostname": "restricted-zone-a-server-host-3",
+          "role": "server"
+        },
+        {
+          "cc4": "restricted_zone_a_subnet_server_host_4",
+          "ip": "10.0.7.15",
+          "hostname": "restricted-zone-a-server-host-4",
+          "role": "server"
+        },
+        {
+          "cc4": "restricted_zone_a_subnet_server_host_5",
+          "ip": "10.0.7.16",
+          "hostname": "restricted-zone-a-server-host-5",
+          "role": "server"
+        },
+        {
+          "cc4": "restricted_zone_a_subnet_user_host_0",
+          "ip": "10.0.7.17",
+          "hostname": "restricted-zone-a-user-host-0",
+          "role": "user"
+        },
+        {
+          "cc4": "restricted_zone_a_subnet_user_host_1",
+          "ip": "10.0.7.18",
+          "hostname": "restricted-zone-a-user-host-1",
+          "role": "user"
+        },
+        {
+          "cc4": "restricted_zone_a_subnet_user_host_2",
+          "ip": "10.0.7.19",
+          "hostname": "restricted-zone-a-user-host-2",
+          "role": "user"
+        },
+        {
+          "cc4": "restricted_zone_a_subnet_user_host_3",
+          "ip": "10.0.7.20",
+          "hostname": "restricted-zone-a-user-host-3",
+          "role": "user"
+        },
+        {
+          "cc4": "restricted_zone_a_subnet_user_host_4",
+          "ip": "10.0.7.21",
+          "hostname": "restricted-zone-a-user-host-4",
+          "role": "user"
+        },
+        {
+          "cc4": "restricted_zone_a_subnet_user_host_5",
+          "ip": "10.0.7.22",
+          "hostname": "restricted-zone-a-user-host-5",
+          "role": "user"
+        },
+        {
+          "cc4": "restricted_zone_a_subnet_user_host_6",
+          "ip": "10.0.7.23",
+          "hostname": "restricted-zone-a-user-host-6",
+          "role": "user"
+        },
+        {
+          "cc4": "restricted_zone_a_subnet_user_host_7",
+          "ip": "10.0.7.24",
+          "hostname": "restricted-zone-a-user-host-7",
+          "role": "user"
+        },
+        {
+          "cc4": "restricted_zone_a_subnet_user_host_8",
+          "ip": "10.0.7.25",
+          "hostname": "restricted-zone-a-user-host-8",
+          "role": "user"
+        },
+        {
+          "cc4": "restricted_zone_a_subnet_user_host_9",
+          "ip": "10.0.7.26",
+          "hostname": "restricted-zone-a-user-host-9",
+          "role": "user"
+        }
+      ]
+    },
+    "blue_agent_1": {
+      "hosts": [
+        {
+          "cc4": "operational_zone_a_subnet_server_host_0",
+          "ip": "10.0.4.11",
+          "hostname": "operational-zone-a-server-host-0",
+          "role": "server"
+        },
+        {
+          "cc4": "operational_zone_a_subnet_server_host_1",
+          "ip": "10.0.4.12",
+          "hostname": "operational-zone-a-server-host-1",
+          "role": "server"
+        },
+        {
+          "cc4": "operational_zone_a_subnet_server_host_2",
+          "ip": "10.0.4.13",
+          "hostname": "operational-zone-a-server-host-2",
+          "role": "server"
+        },
+        {
+          "cc4": "operational_zone_a_subnet_server_host_3",
+          "ip": "10.0.4.14",
+          "hostname": "operational-zone-a-server-host-3",
+          "role": "server"
+        },
+        {
+          "cc4": "operational_zone_a_subnet_server_host_4",
+          "ip": "10.0.4.15",
+          "hostname": "operational-zone-a-server-host-4",
+          "role": "server"
+        },
+        {
+          "cc4": "operational_zone_a_subnet_server_host_5",
+          "ip": "10.0.4.16",
+          "hostname": "operational-zone-a-server-host-5",
+          "role": "server"
+        },
+        {
+          "cc4": "operational_zone_a_subnet_user_host_0",
+          "ip": "10.0.4.17",
+          "hostname": "operational-zone-a-user-host-0",
+          "role": "user"
+        },
+        {
+          "cc4": "operational_zone_a_subnet_user_host_1",
+          "ip": "10.0.4.18",
+          "hostname": "operational-zone-a-user-host-1",
+          "role": "user"
+        },
+        {
+          "cc4": "operational_zone_a_subnet_user_host_2",
+          "ip": "10.0.4.19",
+          "hostname": "operational-zone-a-user-host-2",
+          "role": "user"
+        },
+        {
+          "cc4": "operational_zone_a_subnet_user_host_3",
+          "ip": "10.0.4.20",
+          "hostname": "operational-zone-a-user-host-3",
+          "role": "user"
+        },
+        {
+          "cc4": "operational_zone_a_subnet_user_host_4",
+          "ip": "10.0.4.21",
+          "hostname": "operational-zone-a-user-host-4",
+          "role": "user"
+        },
+        {
+          "cc4": "operational_zone_a_subnet_user_host_5",
+          "ip": "10.0.4.22",
+          "hostname": "operational-zone-a-user-host-5",
+          "role": "user"
+        },
+        {
+          "cc4": "operational_zone_a_subnet_user_host_6",
+          "ip": "10.0.4.23",
+          "hostname": "operational-zone-a-user-host-6",
+          "role": "user"
+        },
+        {
+          "cc4": "operational_zone_a_subnet_user_host_7",
+          "ip": "10.0.4.24",
+          "hostname": "operational-zone-a-user-host-7",
+          "role": "user"
+        },
+        {
+          "cc4": "operational_zone_a_subnet_user_host_8",
+          "ip": "10.0.4.25",
+          "hostname": "operational-zone-a-user-host-8",
+          "role": "user"
+        },
+        {
+          "cc4": "operational_zone_a_subnet_user_host_9",
+          "ip": "10.0.4.26",
+          "hostname": "operational-zone-a-user-host-9",
+          "role": "user"
+        }
+      ]
+    },
+    "blue_agent_2": {
+      "hosts": [
+        {
+          "cc4": "restricted_zone_b_subnet_server_host_0",
+          "ip": "10.0.8.11",
+          "hostname": "restricted-zone-b-server-host-0",
+          "role": "server"
+        },
+        {
+          "cc4": "restricted_zone_b_subnet_server_host_1",
+          "ip": "10.0.8.12",
+          "hostname": "restricted-zone-b-server-host-1",
+          "role": "server"
+        },
+        {
+          "cc4": "restricted_zone_b_subnet_server_host_2",
+          "ip": "10.0.8.13",
+          "hostname": "restricted-zone-b-server-host-2",
+          "role": "server"
+        },
+        {
+          "cc4": "restricted_zone_b_subnet_server_host_3",
+          "ip": "10.0.8.14",
+          "hostname": "restricted-zone-b-server-host-3",
+          "role": "server"
+        },
+        {
+          "cc4": "restricted_zone_b_subnet_server_host_4",
+          "ip": "10.0.8.15",
+          "hostname": "restricted-zone-b-server-host-4",
+          "role": "server"
+        },
+        {
+          "cc4": "restricted_zone_b_subnet_server_host_5",
+          "ip": "10.0.8.16",
+          "hostname": "restricted-zone-b-server-host-5",
+          "role": "server"
+        },
+        {
+          "cc4": "restricted_zone_b_subnet_user_host_0",
+          "ip": "10.0.8.17",
+          "hostname": "restricted-zone-b-user-host-0",
+          "role": "user"
+        },
+        {
+          "cc4": "restricted_zone_b_subnet_user_host_1",
+          "ip": "10.0.8.18",
+          "hostname": "restricted-zone-b-user-host-1",
+          "role": "user"
+        },
+        {
+          "cc4": "restricted_zone_b_subnet_user_host_2",
+          "ip": "10.0.8.19",
+          "hostname": "restricted-zone-b-user-host-2",
+          "role": "user"
+        },
+        {
+          "cc4": "restricted_zone_b_subnet_user_host_3",
+          "ip": "10.0.8.20",
+          "hostname": "restricted-zone-b-user-host-3",
+          "role": "user"
+        },
+        {
+          "cc4": "restricted_zone_b_subnet_user_host_4",
+          "ip": "10.0.8.21",
+          "hostname": "restricted-zone-b-user-host-4",
+          "role": "user"
+        },
+        {
+          "cc4": "restricted_zone_b_subnet_user_host_5",
+          "ip": "10.0.8.22",
+          "hostname": "restricted-zone-b-user-host-5",
+          "role": "user"
+        },
+        {
+          "cc4": "restricted_zone_b_subnet_user_host_6",
+          "ip": "10.0.8.23",
+          "hostname": "restricted-zone-b-user-host-6",
+          "role": "user"
+        },
+        {
+          "cc4": "restricted_zone_b_subnet_user_host_7",
+          "ip": "10.0.8.24",
+          "hostname": "restricted-zone-b-user-host-7",
+          "role": "user"
+        },
+        {
+          "cc4": "restricted_zone_b_subnet_user_host_8",
+          "ip": "10.0.8.25",
+          "hostname": "restricted-zone-b-user-host-8",
+          "role": "user"
+        },
+        {
+          "cc4": "restricted_zone_b_subnet_user_host_9",
+          "ip": "10.0.8.26",
+          "hostname": "restricted-zone-b-user-host-9",
+          "role": "user"
+        }
+      ]
+    },
+    "blue_agent_3": {
+      "hosts": [
+        {
+          "cc4": "operational_zone_b_subnet_server_host_0",
+          "ip": "10.0.5.11",
+          "hostname": "operational-zone-b-server-host-0",
+          "role": "server"
+        },
+        {
+          "cc4": "operational_zone_b_subnet_server_host_1",
+          "ip": "10.0.5.12",
+          "hostname": "operational-zone-b-server-host-1",
+          "role": "server"
+        },
+        {
+          "cc4": "operational_zone_b_subnet_server_host_2",
+          "ip": "10.0.5.13",
+          "hostname": "operational-zone-b-server-host-2",
+          "role": "server"
+        },
+        {
+          "cc4": "operational_zone_b_subnet_server_host_3",
+          "ip": "10.0.5.14",
+          "hostname": "operational-zone-b-server-host-3",
+          "role": "server"
+        },
+        {
+          "cc4": "operational_zone_b_subnet_server_host_4",
+          "ip": "10.0.5.15",
+          "hostname": "operational-zone-b-server-host-4",
+          "role": "server"
+        },
+        {
+          "cc4": "operational_zone_b_subnet_server_host_5",
+          "ip": "10.0.5.16",
+          "hostname": "operational-zone-b-server-host-5",
+          "role": "server"
+        },
+        {
+          "cc4": "operational_zone_b_subnet_user_host_0",
+          "ip": "10.0.5.17",
+          "hostname": "operational-zone-b-user-host-0",
+          "role": "user"
+        },
+        {
+          "cc4": "operational_zone_b_subnet_user_host_1",
+          "ip": "10.0.5.18",
+          "hostname": "operational-zone-b-user-host-1",
+          "role": "user"
+        },
+        {
+          "cc4": "operational_zone_b_subnet_user_host_2",
+          "ip": "10.0.5.19",
+          "hostname": "operational-zone-b-user-host-2",
+          "role": "user"
+        },
+        {
+          "cc4": "operational_zone_b_subnet_user_host_3",
+          "ip": "10.0.5.20",
+          "hostname": "operational-zone-b-user-host-3",
+          "role": "user"
+        },
+        {
+          "cc4": "operational_zone_b_subnet_user_host_4",
+          "ip": "10.0.5.21",
+          "hostname": "operational-zone-b-user-host-4",
+          "role": "user"
+        },
+        {
+          "cc4": "operational_zone_b_subnet_user_host_5",
+          "ip": "10.0.5.22",
+          "hostname": "operational-zone-b-user-host-5",
+          "role": "user"
+        },
+        {
+          "cc4": "operational_zone_b_subnet_user_host_6",
+          "ip": "10.0.5.23",
+          "hostname": "operational-zone-b-user-host-6",
+          "role": "user"
+        },
+        {
+          "cc4": "operational_zone_b_subnet_user_host_7",
+          "ip": "10.0.5.24",
+          "hostname": "operational-zone-b-user-host-7",
+          "role": "user"
+        },
+        {
+          "cc4": "operational_zone_b_subnet_user_host_8",
+          "ip": "10.0.5.25",
+          "hostname": "operational-zone-b-user-host-8",
+          "role": "user"
+        },
+        {
+          "cc4": "operational_zone_b_subnet_user_host_9",
+          "ip": "10.0.5.26",
+          "hostname": "operational-zone-b-user-host-9",
+          "role": "user"
+        }
+      ]
+    },
+    "blue_agent_4": {
+      "hosts": [
+        {
+          "cc4": "admin_network_subnet_server_host_0",
+          "ip": "10.0.0.11",
+          "hostname": "admin-network-server-host-0",
+          "role": "server"
+        },
+        {
+          "cc4": "admin_network_subnet_server_host_1",
+          "ip": "10.0.0.12",
+          "hostname": "admin-network-server-host-1",
+          "role": "server"
+        },
+        {
+          "cc4": "admin_network_subnet_server_host_2",
+          "ip": "10.0.0.13",
+          "hostname": "admin-network-server-host-2",
+          "role": "server"
+        },
+        {
+          "cc4": "admin_network_subnet_server_host_3",
+          "ip": "10.0.0.14",
+          "hostname": "admin-network-server-host-3",
+          "role": "server"
+        },
+        {
+          "cc4": "admin_network_subnet_server_host_4",
+          "ip": "10.0.0.15",
+          "hostname": "admin-network-server-host-4",
+          "role": "server"
+        },
+        {
+          "cc4": "admin_network_subnet_server_host_5",
+          "ip": "10.0.0.16",
+          "hostname": "admin-network-server-host-5",
+          "role": "server"
+        },
+        {
+          "cc4": "admin_network_subnet_user_host_0",
+          "ip": "10.0.0.17",
+          "hostname": "admin-network-user-host-0",
+          "role": "user"
+        },
+        {
+          "cc4": "admin_network_subnet_user_host_1",
+          "ip": "10.0.0.18",
+          "hostname": "admin-network-user-host-1",
+          "role": "user"
+        },
+        {
+          "cc4": "admin_network_subnet_user_host_2",
+          "ip": "10.0.0.19",
+          "hostname": "admin-network-user-host-2",
+          "role": "user"
+        },
+        {
+          "cc4": "admin_network_subnet_user_host_3",
+          "ip": "10.0.0.20",
+          "hostname": "admin-network-user-host-3",
+          "role": "user"
+        },
+        {
+          "cc4": "admin_network_subnet_user_host_4",
+          "ip": "10.0.0.21",
+          "hostname": "admin-network-user-host-4",
+          "role": "user"
+        },
+        {
+          "cc4": "admin_network_subnet_user_host_5",
+          "ip": "10.0.0.22",
+          "hostname": "admin-network-user-host-5",
+          "role": "user"
+        },
+        {
+          "cc4": "admin_network_subnet_user_host_6",
+          "ip": "10.0.0.23",
+          "hostname": "admin-network-user-host-6",
+          "role": "user"
+        },
+        {
+          "cc4": "admin_network_subnet_user_host_7",
+          "ip": "10.0.0.24",
+          "hostname": "admin-network-user-host-7",
+          "role": "user"
+        },
+        {
+          "cc4": "admin_network_subnet_user_host_8",
+          "ip": "10.0.0.25",
+          "hostname": "admin-network-user-host-8",
+          "role": "user"
+        },
+        {
+          "cc4": "admin_network_subnet_user_host_9",
+          "ip": "10.0.0.26",
+          "hostname": "admin-network-user-host-9",
+          "role": "user"
+        },
+        {
+          "cc4": "office_network_subnet_server_host_0",
+          "ip": "10.0.3.11",
+          "hostname": "office-network-server-host-0",
+          "role": "server"
+        },
+        {
+          "cc4": "office_network_subnet_server_host_1",
+          "ip": "10.0.3.12",
+          "hostname": "office-network-server-host-1",
+          "role": "server"
+        },
+        {
+          "cc4": "office_network_subnet_server_host_2",
+          "ip": "10.0.3.13",
+          "hostname": "office-network-server-host-2",
+          "role": "server"
+        },
+        {
+          "cc4": "office_network_subnet_server_host_3",
+          "ip": "10.0.3.14",
+          "hostname": "office-network-server-host-3",
+          "role": "server"
+        },
+        {
+          "cc4": "office_network_subnet_server_host_4",
+          "ip": "10.0.3.15",
+          "hostname": "office-network-server-host-4",
+          "role": "server"
+        },
+        {
+          "cc4": "office_network_subnet_server_host_5",
+          "ip": "10.0.3.16",
+          "hostname": "office-network-server-host-5",
+          "role": "server"
+        },
+        {
+          "cc4": "office_network_subnet_user_host_0",
+          "ip": "10.0.3.17",
+          "hostname": "office-network-user-host-0",
+          "role": "user"
+        },
+        {
+          "cc4": "office_network_subnet_user_host_1",
+          "ip": "10.0.3.18",
+          "hostname": "office-network-user-host-1",
+          "role": "user"
+        },
+        {
+          "cc4": "office_network_subnet_user_host_2",
+          "ip": "10.0.3.19",
+          "hostname": "office-network-user-host-2",
+          "role": "user"
+        },
+        {
+          "cc4": "office_network_subnet_user_host_3",
+          "ip": "10.0.3.20",
+          "hostname": "office-network-user-host-3",
+          "role": "user"
+        },
+        {
+          "cc4": "office_network_subnet_user_host_4",
+          "ip": "10.0.3.21",
+          "hostname": "office-network-user-host-4",
+          "role": "user"
+        },
+        {
+          "cc4": "office_network_subnet_user_host_5",
+          "ip": "10.0.3.22",
+          "hostname": "office-network-user-host-5",
+          "role": "user"
+        },
+        {
+          "cc4": "office_network_subnet_user_host_6",
+          "ip": "10.0.3.23",
+          "hostname": "office-network-user-host-6",
+          "role": "user"
+        },
+        {
+          "cc4": "office_network_subnet_user_host_7",
+          "ip": "10.0.3.24",
+          "hostname": "office-network-user-host-7",
+          "role": "user"
+        },
+        {
+          "cc4": "office_network_subnet_user_host_8",
+          "ip": "10.0.3.25",
+          "hostname": "office-network-user-host-8",
+          "role": "user"
+        },
+        {
+          "cc4": "office_network_subnet_user_host_9",
+          "ip": "10.0.3.26",
+          "hostname": "office-network-user-host-9",
+          "role": "user"
+        },
+        {
+          "cc4": "public_access_zone_subnet_server_host_0",
+          "ip": "10.0.6.11",
+          "hostname": "public-access-zone-server-host-0",
+          "role": "server"
+        },
+        {
+          "cc4": "public_access_zone_subnet_server_host_1",
+          "ip": "10.0.6.12",
+          "hostname": "public-access-zone-server-host-1",
+          "role": "server"
+        },
+        {
+          "cc4": "public_access_zone_subnet_server_host_2",
+          "ip": "10.0.6.13",
+          "hostname": "public-access-zone-server-host-2",
+          "role": "server"
+        },
+        {
+          "cc4": "public_access_zone_subnet_server_host_3",
+          "ip": "10.0.6.14",
+          "hostname": "public-access-zone-server-host-3",
+          "role": "server"
+        },
+        {
+          "cc4": "public_access_zone_subnet_server_host_4",
+          "ip": "10.0.6.15",
+          "hostname": "public-access-zone-server-host-4",
+          "role": "server"
+        },
+        {
+          "cc4": "public_access_zone_subnet_server_host_5",
+          "ip": "10.0.6.16",
+          "hostname": "public-access-zone-server-host-5",
+          "role": "server"
+        },
+        {
+          "cc4": "public_access_zone_subnet_user_host_0",
+          "ip": "10.0.6.17",
+          "hostname": "public-access-zone-user-host-0",
+          "role": "user"
+        },
+        {
+          "cc4": "public_access_zone_subnet_user_host_1",
+          "ip": "10.0.6.18",
+          "hostname": "public-access-zone-user-host-1",
+          "role": "user"
+        },
+        {
+          "cc4": "public_access_zone_subnet_user_host_2",
+          "ip": "10.0.6.19",
+          "hostname": "public-access-zone-user-host-2",
+          "role": "user"
+        },
+        {
+          "cc4": "public_access_zone_subnet_user_host_3",
+          "ip": "10.0.6.20",
+          "hostname": "public-access-zone-user-host-3",
+          "role": "user"
+        },
+        {
+          "cc4": "public_access_zone_subnet_user_host_4",
+          "ip": "10.0.6.21",
+          "hostname": "public-access-zone-user-host-4",
+          "role": "user"
+        },
+        {
+          "cc4": "public_access_zone_subnet_user_host_5",
+          "ip": "10.0.6.22",
+          "hostname": "public-access-zone-user-host-5",
+          "role": "user"
+        },
+        {
+          "cc4": "public_access_zone_subnet_user_host_6",
+          "ip": "10.0.6.23",
+          "hostname": "public-access-zone-user-host-6",
+          "role": "user"
+        },
+        {
+          "cc4": "public_access_zone_subnet_user_host_7",
+          "ip": "10.0.6.24",
+          "hostname": "public-access-zone-user-host-7",
+          "role": "user"
+        },
+        {
+          "cc4": "public_access_zone_subnet_user_host_8",
+          "ip": "10.0.6.25",
+          "hostname": "public-access-zone-user-host-8",
+          "role": "user"
+        },
+        {
+          "cc4": "public_access_zone_subnet_user_host_9",
+          "ip": "10.0.6.26",
+          "hostname": "public-access-zone-user-host-9",
+          "role": "user"
+        }
+      ]
+    }
+  },
+  "unmapped": []
+}

@@ -468,12 +468,9 @@ def run_episodes(
 
     for ep in range(num_episodes):
 
-        # Fresh CC4 environment for every episode.
-        if ep > 0:
-            env = CC4Env(
-                red_agent_class=red_agent_class,
-            )
-
+        # Reuse one CC4Env: reset(seed=...) already regenerates the
+        # scenario (new host layout) via the reseeded RNG. Recreating
+        # the wrapper per episode only wastes construction cost.
         obs_dict, info = env.reset(
             seed=base_seed + ep
         )
@@ -554,6 +551,22 @@ def run_episodes(
                 "env.get_all_host_active_masks() returned "
                 f"{host_active_masks.shape}, expected "
                 f"{(NUM_AGENTS, NUM_HQ_SUBNETS, MAX_HOSTS)}."
+            )
+
+            # Per-sender HOST-target validity in STABLE host order
+            # (same mask train.py samples under -- evaluation must use
+            # the identical mask or it would emit ids the trained
+            # policy never produces). Constant for the whole episode.
+            comm_host_valid_masks = (
+                env.get_all_host_valid_masks()
+            )
+
+            assert comm_host_valid_masks.shape == (
+                NUM_AGENTS, ppo.num_host_targets
+            ), (
+                "env.get_all_host_valid_masks() returned "
+                f"{comm_host_valid_masks.shape}, expected "
+                f"{(NUM_AGENTS, ppo.num_host_targets)}."
             )
 
             # ==================================================
@@ -652,6 +665,7 @@ def run_episodes(
                 obs_array,
                 return_decoded=False,
                 host_active_mask=host_active_masks,
+                host_valid_mask=comm_host_valid_masks,
             )
 
             # --------------------------------------------------

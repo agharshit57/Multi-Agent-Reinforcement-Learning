@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>12</LangVersion>
+    <RootNamespace>CyberMarl.Deployment.AvaloniaApp</RootNamespace>
+    <AssemblyName>CyberMarl.Deployment.AvaloniaApp</AssemblyName>
+    <!-- Cross-platform (Linux/WSL/macOS/Windows). No Windows-only APIs. -->
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Avalonia" Version="11.0.10" />
+    <PackageReference Include="Avalonia.Desktop" Version="11.0.10" />
+    <PackageReference Include="Avalonia.Themes.Fluent" Version="11.0.10" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Core\CyberMarl.Deployment.Core.csproj" />
+    <!-- Shared ViewModels (net8.0-clean: INotifyPropertyChanged only). -->
+    <Compile Include="..\App\ViewModels.cs" Link="Shared\ViewModels.cs" />
+  </ItemGroup>
+
+</Project>

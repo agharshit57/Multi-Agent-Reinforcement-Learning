@@ -84,6 +84,11 @@ from CybORG.Agents import (
     FiniteStateRedAgent,
 )
 from CybORG.Simulator.Scenarios import EnterpriseScenarioGenerator
+from CybORG.Simulator.Scenarios.EnterpriseScenarioGenerator import (
+    SUBNET,
+    MAX_USER_HOSTS,
+    MAX_SERVER_HOSTS,
+)
 from CybORG.Agents.Wrappers import EnterpriseMAE
 from CybORG.Agents.Wrappers.BlueFlatWrapper import NUM_HQ_SUBNETS, MAX_HOSTS
 
@@ -97,61 +102,91 @@ from .communication.schema import (
 )
 
 
+def _stable_subnet_list():
+    """All CC4 subnet names in stable sorted order (plain strings)."""
+    return sorted(s.value for s in SUBNET)
+
+
+def _stable_host_list():
+    """
+    Every hostname that can ever exist in a CC4 episode, sorted.
+
+    CC4 randomises the *count* per zone per episode
+    (MIN/MAX_USER/SERVER_HOSTS) but hostnames always follow the fixed
+    ``{subnet}_user_host_{i}`` / ``{subnet}_server_host_{i}`` pattern
+    with ``i`` below the MAX counts, plus one router per non-internet
+    subnet and the single internet host. Using this maximal universe as
+    the communication vocabulary keeps ``target_id`` meaning stationary
+    across episodes: id ``k`` always names the same hostname, whether or
+    not that host was generated this episode. Naming a host that does
+    not exist this episode simply grades as wrong (absent from
+    ``target_status``) instead of shifting every other host's id.
+    """
+    names = ["root_internet_host_0"]
+    for subnet in SUBNET:
+        value = subnet.value
+        if value == "internet_subnet":
+            continue
+        names.append(f"{value}_router")
+        for i in range(MAX_USER_HOSTS):
+            names.append(f"{value}_user_host_{i}")
+        for i in range(MAX_SERVER_HOSTS):
+            names.append(f"{value}_server_host_{i}")
+    return sorted(names)
+
+
+STABLE_SUBNET_LIST = _stable_subnet_list()
+STABLE_SUBNET_TO_ID = {name: i for i, name in enumerate(STABLE_SUBNET_LIST)}
+STABLE_HOST_LIST = _stable_host_list()
+STABLE_HOST_TO_ID = {name: i for i, name in enumerate(STABLE_HOST_LIST)}
+
+
+def _normalise_subnet_key(key):
+    """
+    Normalise any subnet identifier to its plain lowercase string.
+
+    Live CybORG state mixes ``SUBNET`` enum members (``str`` subclass)
+    and plain strings. ``str(enum)`` gives ``"SUBNET.X"`` (wrong), while
+    the enum's ``.value`` (or its ``str`` content via ``.lower()``) is
+    the real ``"..._subnet"`` name. Always prefer ``.value`` when
+    present so ``sender_subnets``, ``hostname_subnet_map`` lookups and
+    the stable ``STABLE_*`` maps agree with each other.
+    """
+    value = getattr(key, "value", key)
+    return str(value).lower()
+
+
 class CC4Env:
 
     def get_num_targets(self):
             """
             Return the number of possible HOST communication targets.
 
-            Target IDs use the deterministic mapping:
-
-                sorted(state.hosts.keys())
-
-            Therefore the target vocabulary size is the number
-            of hosts currently known to CybORG.
-
-            This is the HOST vocabulary specifically -- see
-            get_num_subnet_targets() for the separate, independent
-            SUBNET vocabulary. The two must never be conflated; see
-            communication/schema.py's module docstring.
+            Target IDs use the stable maximal-universe mapping
+            (``STABLE_HOST_LIST``): id ``k`` always names the same
+            hostname in every episode, regardless of how many hosts
+            were generated this episode. This keeps the decoder head /
+            encoder table stationary. Hosts absent this episode are
+            simply absent from ``target_status`` and grade as wrong.
             """
 
-            state = self.cyborg.environment_controller.state
-
-            hostnames = sorted(state.hosts.keys())
-
-            return len(hostnames)
+            return len(STABLE_HOST_LIST)
 
     def get_num_subnet_targets(self):
         """
         Return the number of possible SUBNET communication targets.
 
-        Subnet target IDs use the deterministic mapping:
-
-            sorted(state.subnet_name_to_cidr.keys())
-
-        the same alphabetical ordering CybORG's own BlueFlatWrapper
-        uses for its per-slot subnet one-hot (and that
-        gnn_attention.py's SUBNET_NAME_ORDER already reproduces) --
-        reusing that convention keeps subnet identity consistent
-        across every part of the pipeline that has to agree on
-        "which index means which subnet".
-
-        This is the SUBNET vocabulary specifically, an INDEPENDENT
-        index space from get_num_targets()'s HOST vocabulary -- index
-        3 here and index 3 there mean unrelated things. See
-        communication/schema.py's module docstring and
-        communication/encoder.py's separate subnet-target embedding
-        table.
+        Subnet target IDs use the stable ``STABLE_SUBNET_LIST`` order
+        (alphabetical CC4 subnet names, matching BlueFlatWrapper's
+        per-slot one-hot and gnn_attention.py's SUBNET_NAME_ORDER).
+        The CC4 subnet set is fixed (9), so this is constant across
+        episodes -- unlike the old live ``sorted(state...)`` query,
+        which is kept only as a consistency check.
         """
 
-        state = self.cyborg.environment_controller.state
+        return len(STABLE_SUBNET_LIST)
 
-        subnet_names = sorted(state.subnet_name_to_cidr.keys())
-
-        return len(subnet_names)
-
-    def __init__(self, red_agent_class=FiniteStateRedAgent):
+    def __init__(self, red_agent_class=FiniteStateRedAgent, seed=None):
 
         scenario = EnterpriseScenarioGenerator(
             blue_agent_class=SleepAgent,
@@ -160,7 +195,14 @@ class CC4Env:
             steps=EPISODE_LENGTH,
         )
 
-        cyborg = CybORG(scenario_generator=scenario)
+        # Pass the seed through so scenario generation itself is
+        # deterministic; per-episode diversity comes from reset(seed=...)
+        # which regenerates the scenario via this RNG.
+        cyborg = (
+            CybORG(scenario_generator=scenario, seed=seed)
+            if seed is not None
+            else CybORG(scenario_generator=scenario)
+        )
 
         # Kept so get_ground_truth() (and anything else that needs true
         # state) can reach environment_controller.state directly, the
@@ -381,7 +423,7 @@ class CC4Env:
             if subnet is None:
                 continue
 
-            subnet = str(subnet).lower()
+            subnet = _normalise_subnet_key(subnet)
 
             zone_flags[subnet] = zone_flags.get(subnet, False) or flagged
 
@@ -528,6 +570,85 @@ class CC4Env:
         return np.stack(
             [
                 self.get_host_active_mask(name)
+                for name in agent_names
+            ],
+            axis=0,
+        )
+
+    def get_host_valid_mask(self, agent_name):
+        """
+        Return `agent_name`'s per-episode HOST-target validity mask:
+
+            [len(STABLE_HOST_LIST)] bool (currently 137)
+
+        True at stable id `i` iff STABLE_HOST_LIST[i] both occupies one
+        of this agent's observation slots THIS EPISODE and exists in
+        `state.hosts` right now. Uses the IDENTICAL slot list + filter
+        as get_host_active_mask() (`self.env.hosts(agent_name)` with
+        the same per-subnet `subnet in h and "router" not in h`
+        filter), only the output layout differs: stable-vocabulary
+        positions instead of (subnet_slot, host_slot).
+
+        This is the mask the message decoder needs to keep
+        per-episode-invalid HOST ids out of the sampled distribution
+        BEFORE sampling (see decoder._masked_host_logits): the
+        decoder's host head is indexed in STABLE order, exactly like
+        target_status keys from get_ground_truth().
+
+        Consequences of the slot-based mapping (deliberate):
+        - Hostnames outside this agent's zone have no slot here, so
+          they read False: a sender's gradeable claims live in its own
+          zone (see get_ground_truth), anything else grades wrong
+          anyway.
+        - Routers have no observation slots (BlueFlatWrapper excludes
+          them from alert subvectors, so a sender has no observation
+          basis for router claims) and read False. Routers run no
+          services, so Red cannot establish sessions on them and they
+          essentially never appear in target_status.
+        - Subnet targets need no mask (fixed set of 9, always present).
+        """
+
+        state = self.cyborg.environment_controller.state
+
+        mask = np.zeros(len(STABLE_HOST_LIST), dtype=bool)
+
+        subnet_slots = self.env.subnets(agent_name)
+        hosts = self.env.hosts(agent_name)
+
+        for slot, subnet in enumerate(subnet_slots[:NUM_HQ_SUBNETS]):
+
+            subnet_hosts = [
+                h for h in hosts if subnet in h and "router" not in h
+            ]
+
+            for hostname in subnet_hosts[:MAX_HOSTS]:
+
+                if hostname not in state.hosts:
+                    continue
+
+                target_id = STABLE_HOST_TO_ID.get(hostname)
+
+                if target_id is not None:
+                    mask[target_id] = True
+
+        return mask
+
+    def get_all_host_valid_masks(self):
+        """
+        `get_host_valid_mask` for every agent, stacked in the same
+        `sorted(self.possible_agents)` order train.py's `agent_names`
+        already uses everywhere else (obs_array, actions_arr, ...).
+
+        Returns
+        -------
+        np.ndarray, shape [NUM_AGENTS, len(STABLE_HOST_LIST)], bool
+        """
+
+        agent_names = sorted(self.possible_agents)
+
+        return np.stack(
+            [
+                self.get_host_valid_mask(name)
                 for name in agent_names
             ],
             axis=0,
@@ -703,12 +824,12 @@ class CC4Env:
                 "zone_quiet": bool,   # True iff no relevant host exists
             }
 
-        target_id in target_status uses the deterministic sorted host
-        list (sorted(state.hosts.keys())) -- matching get_num_targets().
-        subnet_id in subnet_status uses the deterministic sorted subnet
-        list (sorted(state.subnet_name_to_cidr.keys())) -- matching
-        get_num_subnet_targets(). These MUST remain consistent with the
-        target-ID mappings used by the communication encoder/decoder.
+        target_id in target_status uses the stable maximal-universe host
+        list (STABLE_HOST_LIST) -- matching get_num_targets().
+        subnet_id in subnet_status uses the stable subnet list
+        (STABLE_SUBNET_LIST) -- matching get_num_subnet_targets().
+        These MUST remain consistent with the target-ID mappings used
+        by the communication encoder/decoder.
         """
 
         # ------------------------------------------------------------
@@ -734,37 +855,22 @@ class CC4Env:
         # ------------------------------------------------------------
 
         sender_subnets = {
-            str(subnet).lower()
+            _normalise_subnet_key(subnet)
             for subnet in agent_meta.allowed_subnets
         }
 
         # ------------------------------------------------------------
-        # Deterministic host <-> target_id mapping.
+        # Stable host/subnet <-> id mappings.
         #
-        # IMPORTANT: must match the mapping used by the communication
-        # module and get_num_targets().
+        # MUST match get_num_targets()/get_num_subnet_targets() and the
+        # communication encoder/decoder: the maximal stable universe,
+        # not the live per-episode host list (whose length AND
+        # lexicographic order change with the randomised host count).
         # ------------------------------------------------------------
 
-        hostnames = sorted(state.hosts.keys())
+        host_to_id = STABLE_HOST_TO_ID
 
-        host_to_id = {
-            hostname: index
-            for index, hostname in enumerate(hostnames)
-        }
-
-        # ------------------------------------------------------------
-        # Deterministic subnet <-> subnet_id mapping.
-        #
-        # IMPORTANT: must match get_num_subnet_targets() and
-        # gnn_attention.py's SUBNET_NAME_ORDER.
-        # ------------------------------------------------------------
-
-        subnet_names = sorted(state.subnet_name_to_cidr.keys())
-
-        subnet_to_id = {
-            name: index
-            for index, name in enumerate(subnet_names)
-        }
+        subnet_to_id = STABLE_SUBNET_TO_ID
 
         # ------------------------------------------------------------
         # Every host in the sender's zone, graded from the PRE-STEP
@@ -779,9 +885,9 @@ class CC4Env:
 
         for hostname in sorted(self._pre_step_host_snapshot):
 
-            subnet = str(
+            subnet = _normalise_subnet_key(
                 state.hostname_subnet_map.get(hostname, "")
-            ).lower()
+            )
 
             if subnet not in sender_subnets:
                 continue
@@ -799,10 +905,10 @@ class CC4Env:
 
             if target_id is not None:
                 target_status[target_id] = tier
-            # else: in the snapshot but not in the current host list,
-            # so it cannot be addressed by any HOST message target_id
-            # -- skip target_status, but it can still count toward its
-            # subnet's aggregated tier below.
+            # else: hostname outside the stable universe (should not
+            # happen for CC4-generated hosts) -- skip target_status,
+            # but it can still count toward its subnet's aggregated
+            # tier below.
 
             subnet_id = subnet_to_id.get(subnet)
 

@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>12</LangVersion>
+    <UseWPF>true</UseWPF>
+    <RootNamespace>CyberMarl.Deployment.App</RootNamespace>
+    <AssemblyName>CyberMarl.Deployment.App</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Core\CyberMarl.Deployment.Core.csproj" />
+  </ItemGroup>
+
+</Project>

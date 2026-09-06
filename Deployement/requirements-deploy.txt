@@ -1,0 +1,11 @@
+# Deployment-layer extras (on top of the training Requirements.txt).
+#
+# The telemetry/observation/GUI core needs ONLY numpy (stdlib otherwise;
+# tkinter ships with standard CPython, incl. Windows).
+# Model inference reuses the training venv: install ../Requirements.txt
+# first, then this file. torch is intentionally NOT listed here -- it
+# comes from the training requirements when --policy trained is used.
+# Live HTTP polling intentionally uses stdlib urllib (no requests
+# dependency); pytest is used for the suite but unittest also works:
+#   python -m unittest Deployement.tests.test_deployment
+numpy>=1.24

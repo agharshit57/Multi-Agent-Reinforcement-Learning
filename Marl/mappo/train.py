@@ -479,7 +479,7 @@ def train():
 
     current_red_agent = get_curriculum_stage(0)
 
-    env = CC4Env(red_agent_class=current_red_agent)
+    env = CC4Env(red_agent_class=current_red_agent, seed=SEED)
 
     agent_names = sorted(env.possible_agents)
 
@@ -536,6 +536,7 @@ def train():
     previous_field_ids = None
     previous_comm_log_probs = None
     previous_comm_entropies = None
+    previous_comm_host_valid = None
 
     episode_return = np.zeros(NUM_AGENTS, dtype=np.float32)
     episode_returns_log = []
@@ -556,6 +557,41 @@ def train():
     total_timesteps = TOTAL_EPISODES * EPISODE_LENGTH
 
     start_time = time.time()
+
+    ########################################################
+    # PPO update helper (single code path)
+    #
+    # Used both for full rollouts and for curriculum-flush updates
+    # (see the episode-boundary block): identical GAE bootstrap ->
+    # PPO update -> stats -> clear sequence in both cases, so update
+    # timing/counting/logging cannot drift between the two paths.
+    ########################################################
+
+    def run_ppo_update(last_values, reason=""):
+        nonlocal update_count
+
+        buffer.compute_advantages(last_values)
+
+        ppo.train()
+        stats = ppo.update(buffer)
+
+        actor_loss_history.append(stats["actor_loss"])
+        critic_loss_history.append(stats["critic_loss"])
+        entropy_history.append(stats["entropy"])
+
+        ppo.eval()
+
+        update_count += 1
+
+        print(
+            f"  -> update {update_count:5d}  "
+            f"actor_loss={stats['actor_loss']:.4f}  "
+            f"critic_loss={stats['critic_loss']:.4f}  "
+            f"entropy={stats['entropy']:.4f}"
+            f"{reason}"
+        )
+
+        buffer.clear()
 
     ########################################################
     # Rollout / Update Loop
@@ -583,9 +619,9 @@ def train():
         # directly from the environment's true state here, once per
         # timestep, for every agent, in the same agent_names order
         # obs_array/actions_arr/etc. already use. This does NOT
-        # change within an episode; it is only recomputed because a
-        # fresh CC4Env (and therefore a fresh episode's host layout)
-        # is created at every episode boundary below.
+        # change within an episode; it is only recomputed each step
+        # because reset(seed=...) regenerates the layout at every
+        # episode boundary below.
         ####################################################
 
         host_active_mask_array = env.get_all_host_active_masks()
@@ -596,6 +632,20 @@ def train():
             "env.get_all_host_active_masks() returned "
             f"{host_active_mask_array.shape}, expected "
             f"{(NUM_AGENTS, NUM_HQ_SUBNETS, MAX_HOSTS)}."
+        )
+
+        # Per-sender HOST-target validity in STABLE host order, used
+        # to mask per-episode-invalid ids BEFORE the decoder samples
+        # (see decoder._masked_host_logits). Same agent_names order
+        # as obs_array; constant within an episode.
+        comm_host_valid_array = env.get_all_host_valid_masks()
+
+        assert comm_host_valid_array.shape == (
+            NUM_AGENTS, num_host_targets
+        ), (
+            "env.get_all_host_valid_masks() returned "
+            f"{comm_host_valid_array.shape}, expected "
+            f"{(NUM_AGENTS, num_host_targets)}."
         )
 
         ####################################################
@@ -692,6 +742,7 @@ def train():
             obs_array,
             return_decoded=True,
             host_active_mask=host_active_mask_array,
+            host_valid_mask=comm_host_valid_array,
         )
 
         ####################################################
@@ -773,6 +824,17 @@ def train():
             )
         )
 
+        # Validity mask of the PREVIOUS obs (that generated the stored
+        # ids), mirroring stored_field_ids exactly. None on the first
+        # row of an episode -- that row reads all-True
+        # (unmasked-equivalent) and is excluded from the actor loss by
+        # communication_valid=False anyway.
+        stored_comm_host_valid = (
+            previous_comm_host_valid
+            if previous_comm_host_valid is not None
+            else None
+        )
+
         buffer.store(
             obs=obs_array,
             global_obs=global_obs,
@@ -793,6 +855,7 @@ def train():
             communication_field_ids=stored_field_ids,
             communication_log_probs=stored_comm_log_probs,
             communication_entropies=stored_comm_entropies,
+            communication_host_valid=stored_comm_host_valid,
 
             host_active_mask=host_active_mask_array,
         )
@@ -809,6 +872,7 @@ def train():
         previous_field_ids = communication_field_ids
         previous_comm_log_probs = communication_log_probs
         previous_comm_entropies = communication_entropies
+        previous_comm_host_valid = comm_host_valid_array
         ####################################################
         # Update evaluator state
         ####################################################
@@ -825,16 +889,34 @@ def train():
 
             episode_count += 1
 
-            current_red_agent = get_curriculum_stage(episode_count)
-            env = CC4Env(red_agent_class=current_red_agent)
-
-            # Recreating CC4Env gives a fresh instance -- refresh the
-            # metadata derived from it too, in case anything about
-            # agent list/observation shape ever varies across
-            # instances (currently believed constant across red-agent
-            # choices, but cheap to keep in sync rather than assume).
-            agent_names = sorted(env.possible_agents)
-            obs_dims = env.get_observation_dims()
+            # Reuse the same CC4Env across episodes: reset(seed=...)
+            # already regenerates the scenario (new host layout) via the
+            # reseeded RNG, so recreating the whole wrapper every episode
+            # only wastes construction cost and breaks determinism. A new
+            # instance is required solely when the curriculum switches
+            # the red-agent class, which lives in the scenario generator.
+            next_red_agent = get_curriculum_stage(episode_count)
+            if next_red_agent is not current_red_agent:
+                # Curriculum switch: the buffer holds ONLY
+                # old-curriculum transitions (the row just stored ends
+                # with dones=1, so GAE already terminates there -- no
+                # credit propagates past it). Run the PPO update on
+                # that old-only data with a terminal (zero) bootstrap,
+                # then clear BEFORE recreating the environment, so the
+                # next rollout contains new-curriculum transitions
+                # exclusively and no A->B temporal transition exists.
+                if len(buffer) > 0:
+                    run_ppo_update(
+                        np.zeros(NUM_AGENTS, dtype=np.float32),
+                        reason="  [curriculum flush]",
+                    )
+                current_red_agent = next_red_agent
+                env = CC4Env(
+                    red_agent_class=current_red_agent,
+                    seed=SEED + episode_count,
+                )
+                agent_names = sorted(env.possible_agents)
+                obs_dims = env.get_observation_dims()
 
             team_return = episode_return.sum()
             episode_returns_log.append(team_return)
@@ -874,6 +956,7 @@ def train():
             previous_field_ids = None
             previous_comm_log_probs = None
             previous_comm_entropies = None
+            previous_comm_host_valid = None
 
             obs_dict, info = env.reset(seed=SEED + episode_count)
             previous_info = info
@@ -893,27 +976,7 @@ def train():
 
             last_values = ppo.get_value(last_global_obs).cpu().numpy()
 
-            buffer.compute_advantages(last_values)
-
-            ppo.train()
-            stats = ppo.update(buffer)
-
-            actor_loss_history.append(stats["actor_loss"])
-            critic_loss_history.append(stats["critic_loss"])
-            entropy_history.append(stats["entropy"])
-
-            ppo.eval()
-
-            update_count += 1
-
-            print(
-                f"  -> update {update_count:5d}  "
-                f"actor_loss={stats['actor_loss']:.4f}  "
-                f"critic_loss={stats['critic_loss']:.4f}  "
-                f"entropy={stats['entropy']:.4f}"
-            )
-
-            buffer.clear()
+            run_ppo_update(last_values)
 
     ########################################################
     # Final checkpoint

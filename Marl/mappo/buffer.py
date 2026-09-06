@@ -235,6 +235,24 @@ class MAPPOBuffer:
         )
 
         # ==========================================================
+        # HOST-TARGET VALIDITY (communication_host_valid)
+        #
+        # communication_host_valid[t, sender] ([H] bool, STABLE host
+        # order): which HOST ids that sender was allowed to sample at
+        # row t (see env.get_host_valid_mask / decoder.
+        # _masked_host_logits). Replayed at PPO-update time so
+        # old/new target_id log-probs stay comparable. Lazily
+        # allocated all-True (unmasked-equivalent) on first explicit
+        # store -- mirroring host_active_mask's safe default -- so
+        # rows stored without a mask (e.g. episode-start placeholders,
+        # legacy callers) behave exactly like the unmasked legacy
+        # path. Stays None until first supplied, in which case
+        # get_batches() omits the key and update() trains unmasked.
+        # ==========================================================
+
+        self.communication_host_valid = None
+
+        # ==========================================================
         # HOST-LEVEL PADDING (host_active_mask)
         #
         # host_active_mask[t, agent, subnet_slot, host_slot]: True
@@ -254,9 +272,18 @@ class MAPPOBuffer:
         # zone for the whole episode at reset time, so a single
         # timestep's mask already describes every other timestep in
         # the same episode.
+        #
+        # Initialised to all-True (not all-False): rows where the
+        # caller supplies no mask must behave exactly like
+        # gnn_attention.py's own default (host_active_mask=None --
+        # every host slot in an *active* subnet is real; padding
+        # subnet slots are still isolated via the observation-derived
+        # slot activity). An all-False default would silently declare
+        # every host padding. Explicitly supplied masks overwrite the
+        # row unchanged (see store()).
         # ==========================================================
 
-        self.host_active_mask = np.zeros(
+        self.host_active_mask = np.ones(
             (ROLLOUT_STEPS, NUM_AGENTS, NUM_HQ_SUBNETS, MAX_HOSTS),
             dtype=bool,
         )
@@ -289,6 +316,7 @@ class MAPPOBuffer:
         communication_log_probs=None,
         communication_entropies=None,
         host_active_mask=None,
+        communication_host_valid=None,
     ):
         """
         Store one timestep of the multi-agent rollout.
@@ -323,6 +351,18 @@ class MAPPOBuffer:
             fall back to gnn_attention.py's own default -- every host
             slot in an active subnet treated as real, i.e. no
             per-host padding isolation.
+
+        communication_host_valid:
+
+            [N, H] bool, or None (H = STABLE host vocabulary size).
+
+            Row i is agent i's HOST-target validity mask that its
+            message at this row was sampled under -- see
+            env.get_host_valid_mask(). Pass the PREVIOUS timestep's
+            array (mirroring communication_field_ids), or None when
+            unavailable: unstamped rows read all-True
+            (unmasked-equivalent) and update() trains unmasked if the
+            key was never supplied at all.
         """
 
         if self.ptr >= ROLLOUT_STEPS:
@@ -496,6 +536,52 @@ class MAPPOBuffer:
 
             self.host_active_mask[t] = host_active_mask
 
+        # ==========================================================
+        # HOST-target validity (communication_host_valid)
+        # ==========================================================
+
+        if communication_host_valid is not None:
+
+            communication_host_valid = np.asarray(
+                communication_host_valid, dtype=bool
+            )
+
+            if communication_host_valid.ndim != 2:
+                raise ValueError(
+                    "Invalid communication_host_valid shape. "
+                    "Expected [NUM_AGENTS, H], "
+                    f"got {communication_host_valid.shape}"
+                )
+
+            if communication_host_valid.shape[0] != NUM_AGENTS:
+                raise ValueError(
+                    "Invalid communication_host_valid shape. "
+                    f"Expected {NUM_AGENTS} sender rows, "
+                    f"got {communication_host_valid.shape}"
+                )
+
+            if self.communication_host_valid is None:
+
+                self.communication_host_valid = np.ones(
+                    (ROLLOUT_STEPS, NUM_AGENTS)
+                    + communication_host_valid.shape[1:],
+                    dtype=bool,
+                )
+
+            elif (
+                communication_host_valid.shape
+                != self.communication_host_valid.shape[1:]
+            ):
+
+                raise ValueError(
+                    "Invalid communication_host_valid shape. "
+                    "Expected "
+                    f"{self.communication_host_valid.shape[1:]}, "
+                    f"got {communication_host_valid.shape}"
+                )
+
+            self.communication_host_valid[t] = communication_host_valid
+
         # ----------------------------------------------------------
         # Advance pointer
         # ----------------------------------------------------------
@@ -556,7 +642,7 @@ class MAPPOBuffer:
 
         n = self.ptr
 
-        return {
+        batch = {
 
             "obs":
                 torch.tensor(self.obs[:n], dtype=torch.float32, device=DEVICE),
@@ -646,6 +732,19 @@ class MAPPOBuffer:
                     device=DEVICE,
                 ),
         }
+
+        # Only present when at least one row was stored with an
+        # explicit mask; update() treats a missing key as "train
+        # unmasked" (legacy behavior).
+        if self.communication_host_valid is not None:
+
+            batch["communication_host_valid"] = torch.tensor(
+                self.communication_host_valid[:n],
+                dtype=torch.bool,
+                device=DEVICE,
+            )
+
+        return batch
 
     # ==============================================================
     # Is Full / Length

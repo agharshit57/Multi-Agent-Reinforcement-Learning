@@ -43,7 +43,7 @@ ACTION_DIM = LARGE_ACTION_DIM
 # ==========================================================
 # MAPPO Hyperparameters
 # ==========================================================
-TOTAL_EPISODES = 20                             
+TOTAL_EPISODES = 1000                             
 
 ROLLOUT_STEPS = 512
 
@@ -65,6 +65,15 @@ GAE_LAMBDA = 0.95
 PPO_CLIP = 0.2
 VALUE_LOSS_COEF = 0.5
 ENTROPY_COEF = 0.01
+# Separate communication coefficients.
+#
+# The joint message log-prob sums 7 fields, so its scale/variance is
+# larger than the single env action. Without its own coefficient the
+# comm policy gradient can dominate the action gradient.
+# Likewise comm entropy (mean over senders) must not share the action
+# entropy bonus 1:1.
+COMM_POLICY_COEF = 0.3
+COMM_ENTROPY_COEF = 0.005
 MAX_GRAD_NORM = 0.5
 
 # Optional value clipping
@@ -86,7 +95,11 @@ NUM_HIDDEN_LAYERS = 5
 
 ACTIVATION = "relu"
 
-DEVICE = "cuda"
+# Resolve to CUDA only when actually available; otherwise fall back to
+# CPU instead of crashing inside torch .to("cuda").
+import torch as _torch
+
+DEVICE = "cuda" if _torch.cuda.is_available() else "cpu"
 
 
 # ==========================================================
@@ -95,10 +108,10 @@ DEVICE = "cuda"
 
 PRINT_EVERY = 10
 
-SAVE_EVERY = 500
+SAVE_EVERY = 250
 
-CHECKPOINT_DIR = "checkpoints/groundTruth"
-LOG_DIR = "evaluation/groundTruth"
+CHECKPOINT_DIR = "checkpoints/fixedMaybe"
+LOG_DIR = "evaluation/fixedMaybe"
 
 
 # ==========================================================

@@ -1245,6 +1245,7 @@ class SharedActor(nn.Module):
         keys = self.communication_key(messages)
         values = self.communication_value(messages)
 
+        trust_bias = None
         if trust is not None:
 
             if trust.shape[1] != messages.shape[1]:
@@ -1253,13 +1254,29 @@ class SharedActor(nn.Module):
                     "contain the same number of senders."
                 )
 
+            # Clamped so log(trust) below stays finite even for
+            # zero/near-zero trust (log(1e-4) ~= -9.21); trust == 1.0
+            # maps to a zero bias (no down-weighting).
             trust_safe = torch.clamp(trust, min=1e-4, max=1.0)
-            values = values * trust_safe.unsqueeze(-1)
+            # Bias attention logits: log(trust) down-weights *which*
+            # sender gets attended to. This changes the mixture
+            # *weights* (direction), which survives the LayerNorm below.
+            # Deliberately NO direct values-magnitude scaling here: it
+            # was largely erased by that LayerNorm while doubly
+            # suppressing low-trust senders together with the PPO
+            # credit weight in mappo.py. Trust reaches the sender-side
+            # update through that credit weight instead.
+            trust_bias = torch.log(trust_safe).unsqueeze(1).to(
+                dtype=local_hidden.dtype
+            )
+            trust_bias = trust_bias.repeat_interleave(
+                self.communication_attention.num_heads, dim=0
+            )
 
         query = self.communication_query(local_hidden).unsqueeze(1)
 
         context, communication_weights = self.communication_attention(
-            query, keys, values, need_weights=True
+            query, keys, values, need_weights=True, attn_mask=trust_bias
         )
 
         self.last_communication_attention = communication_weights.detach()

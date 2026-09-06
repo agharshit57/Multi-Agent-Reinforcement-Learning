@@ -1,0 +1,229 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="CyberMarl.Deployment.AvaloniaApp.MainWindow"
+        Title="Cyber MARL — Real-World SOC Console"
+        Width="1140" Height="740" Background="#0B0F14">
+  <DockPanel Background="#0B0F14">
+    <!-- Status bar (Avalonia has no StatusBar control): connection truth. -->
+    <Border DockPanel.Dock="Bottom" Background="#121924" Padding="10,6">
+      <StackPanel Orientation="Horizontal" Spacing="8">
+        <TextBlock Text="{Binding Health}" />
+        <TextBlock Text="|" Classes="muted" />
+        <TextBlock Text="{Binding MappingSummary}" Classes="muted" />
+      </StackPanel>
+    </Border>
+
+    <DockPanel Margin="14,10">
+      <StackPanel DockPanel.Dock="Top" Spacing="4" Margin="0,0,0,8">
+        <TextBlock Text="{Binding PageTitle}" Classes="title" />
+        <TextBlock Text="{Binding Banner}" Classes="muted" TextWrapping="Wrap" />
+        <StackPanel Orientation="Horizontal" Spacing="4">
+          <Button Content="Connect" Command="{Binding ConnectCommand}" Classes="primary" />
+          <Button Content="Run cycle" Command="{Binding RunCycleCommand}" Classes="primary" />
+          <TextBlock Text="Mode:" Classes="muted" VerticalAlignment="Center" Margin="12,0,0,0" />
+          <Button Content="Shadow" Command="{Binding ModeCommand}" CommandParameter="Shadow" />
+          <Button Content="Mock" Command="{Binding ModeCommand}" CommandParameter="Mock" />
+          <Button Content="Supervised" Command="{Binding ModeCommand}" CommandParameter="Supervised" />
+          <Button Content="Live" Command="{Binding ModeCommand}" CommandParameter="Live" />
+          <TextBlock Text="{Binding SelectedMode, StringFormat='[{0}]'}" VerticalAlignment="Center" />
+        </StackPanel>
+      </StackPanel>
+
+      <!-- Left-placed tabs act as the sidebar; content pages below. -->
+      <TabControl TabStripPlacement="Left" SelectedIndex="{Binding SidebarIndex, Mode=TwoWay}">
+        <!-- 0 Dashboard -->
+        <TabItem Header="Dashboard">
+          <ScrollViewer>
+            <StackPanel Spacing="0" Margin="8,0,0,0">
+              <Grid ColumnDefinitions="*,*,*,*" Margin="0,0,0,10">
+                <Border Classes="card" Grid.Column="0" Margin="0,0,8,0">
+                  <StackPanel><TextBlock Text="{Binding ConnectionCard}" FontSize="18" FontWeight="SemiBold" />
+                  <TextBlock Text="Sidecar" Classes="muted" /></StackPanel>
+                </Border>
+                <Border Classes="card" Grid.Column="1" Margin="0,0,8,0">
+                  <StackPanel><TextBlock Text="{Binding ContractCard}" FontSize="13" FontWeight="SemiBold" TextWrapping="Wrap" />
+                  <TextBlock Text="Frozen contract" Classes="muted" /></StackPanel>
+                </Border>
+                <Border Classes="card" Grid.Column="2" Margin="0,0,8,0">
+                  <StackPanel><TextBlock Text="{Binding AssetsCard}" FontSize="18" FontWeight="SemiBold" />
+                  <TextBlock Text="Real machines" Classes="muted" /></StackPanel>
+                </Border>
+                <Border Classes="card" Grid.Column="3">
+                  <StackPanel><TextBlock Text="{Binding PendingCard}" FontSize="18" FontWeight="SemiBold" />
+                  <TextBlock Text="Approvals waiting" Classes="muted" /></StackPanel>
+                </Border>
+              </Grid>
+              <Border Classes="card">
+                <StackPanel Spacing="6">
+                  <TextBlock Text="Getting started — do these in order" Classes="section" />
+                  <Grid ColumnDefinitions="*,Auto">
+                    <TextBlock Grid.Column="0" Text="{Binding Step1Text}" VerticalAlignment="Center" TextWrapping="Wrap" />
+                    <Button Grid.Column="1" Content="1. Connect" Command="{Binding ConnectCommand}" />
+                  </Grid>
+                  <Grid ColumnDefinitions="*,Auto">
+                    <TextBlock Grid.Column="0" Text="{Binding Step2Text}" VerticalAlignment="Center" TextWrapping="Wrap" />
+                    <Button Grid.Column="1" Content="2. Discover" Command="{Binding RefreshLocalCommand}" />
+                  </Grid>
+                  <Grid ColumnDefinitions="*,Auto">
+                    <TextBlock Grid.Column="0" Text="{Binding Step3Text}" VerticalAlignment="Center" TextWrapping="Wrap" />
+                    <Button Grid.Column="1" Content="3. Run cycle" Command="{Binding RunCycleCommand}" Classes="primary" />
+                  </Grid>
+                </StackPanel>
+              </Border>
+              <Border Classes="card">
+                <StackPanel Spacing="6">
+                  <TextBlock Text="What am I looking at?" Classes="section" />
+                  <TextBlock Classes="muted" TextWrapping="Wrap"
+                    Text="Real Assets shows your physical machines — that is the infrastructure. The trained model thinks in CC4 simulation slots, so each cycle maps your machines into that fixed geometry; that mapping lives only under Policy Mapping and is never infrastructure. Actions proposes real operations; anything risky waits for your approval. Nothing here executes on its own." />
+                  <TextBlock Classes="muted" Text="Start the sidecar first (terminal 1), then launch this app with these set (terminal 2):" />
+                  <TextBox FontFamily="monospace" FontSize="12" IsReadOnly="True" AcceptsReturn="True"
+                    Text="INFERENCE_TOKEN=dev-token-123&#x0a;python -m Deployement.sidecar --port 8410 --policy mock --mode shadow&#x0a;&#x0a;INFERENCE_URL=http://127.0.0.1:8410&#x0a;INFERENCE_TOKEN=dev-token-123" />
+                </StackPanel>
+              </Border>
+            </StackPanel>
+          </ScrollViewer>
+        </TabItem>
+
+        <!-- 1 Real Assets -->
+        <TabItem Header="Real Assets">
+          <DockPanel Margin="8,0,0,0">
+            <TextBlock DockPanel.Dock="Top" Classes="muted" TextWrapping="Wrap"
+              Text="Physical machines under protection. Coverage tells you what is actually sensed: covered-local/agent means real telemetry; uncovered means declared but unsensed (reads STALE, never healthy); observed-arp-only means seen on the wire and nothing more." />
+            <ListBox ItemsSource="{Binding Assets}" Margin="0,8,0,0">
+              <ListBox.ItemTemplate>
+                <DataTemplate>
+                  <Border Classes="card">
+                    <StackPanel Spacing="2">
+                      <TextBlock FontWeight="SemiBold" FontSize="14">
+                        <Run Text="{Binding Hostname}" /><Run Text="  [" /><Run Text="{Binding AssetId}" /><Run Text="]" />
+                      </TextBlock>
+                      <TextBlock Classes="muted">
+                        <Run Text="{Binding Address}" /><Run Text="   ·   " /><Run Text="{Binding Coverage}" />
+                        <Run Text="   ·   " /><Run Text="{Binding Segment}" />
+                      </TextBlock>
+                      <TextBlock Classes="muted" TextWrapping="Wrap">
+                        <Run Text="Services: " /><Run Text="{Binding ServicesText}" />
+                      </TextBlock>
+                      <TextBlock Classes="muted" TextWrapping="Wrap">
+                        <Run Text="Links: " /><Run Text="{Binding LinksText}" />
+                      </TextBlock>
+                      <TextBlock Classes="muted" TextWrapping="Wrap">
+                        <Run Text="Detail: " /><Run Text="{Binding CoverageDetail}" />
+                      </TextBlock>
+                      <TextBlock Classes="muted">
+                        <Run Text="OS: " /><Run Text="{Binding Os}" /><Run Text="   MAC: " /><Run Text="{Binding MacsText}" />
+                      </TextBlock>
+                      <TextBlock Classes="muted" FontSize="11" Text="{Binding PolicySlot}" />
+                    </StackPanel>
+                  </Border>
+                </DataTemplate>
+              </ListBox.ItemTemplate>
+            </ListBox>
+          </DockPanel>
+        </TabItem>
+
+        <!-- 2 Actions -->
+        <TabItem Header="{Binding ActionsNavLabel}">
+          <DockPanel Margin="8,0,0,0">
+            <TextBlock DockPanel.Dock="Top" Classes="muted" TextWrapping="Wrap"
+              Text="Plans from the last cycle. Use the per-card Approve button for queued rows. Blocked rows are refusals (no physical target) and can never execute. Approvals run on the sidecar — Live mode asks you to confirm because it executes for real." />
+            <ListBox ItemsSource="{Binding Actions}" Margin="0,8,0,0">
+              <ListBox.ItemTemplate>
+                <DataTemplate>
+                  <Border Classes="card">
+                    <StackPanel Spacing="4">
+                      <TextBlock Text="{Binding Description}" TextWrapping="Wrap" FontWeight="SemiBold" />
+                      <TextBlock Classes="muted">
+                        <Run Text="{Binding Operation}" /><Run Text="   ·   " /><Run Text="{Binding Risk}" />
+                        <Run Text="   ·   " /><Run Text="{Binding Status}" />
+                      </TextBlock>
+                      <TextBlock Classes="muted" TextWrapping="Wrap" Text="{Binding BlockReason}" />
+                      <Button Content="Approve" Classes="primary" HorizontalAlignment="Left"
+                        Command="{Binding $parent[Window].DataContext.ApproveCommand}"
+                        CommandParameter="{Binding}" />
+                    </StackPanel>
+                  </Border>
+                </DataTemplate>
+              </ListBox.ItemTemplate>
+            </ListBox>
+          </DockPanel>
+        </TabItem>
+
+        <!-- 3 Policy Mapping (technical) -->
+        <TabItem Header="Policy Mapping">
+          <DockPanel Margin="8,0,0,0">
+            <Border DockPanel.Dock="Top" Background="#3A2A10" Padding="10" CornerRadius="8" Margin="0,0,0,8">
+              <TextBlock Foreground="#FFC65C" TextWrapping="Wrap"
+                Text="Technical view only: how real assets were placed into the frozen 112-slot CC4 policy geometry so the trained checkpoint can serve. These slot names are NOT infrastructure — never treat them as hosts, zones, or addresses." />
+            </Border>
+            <TextBlock DockPanel.Dock="Top" Text="{Binding MappingSummary}" Classes="muted" />
+            <ListBox ItemsSource="{Binding Bindings}" Margin="0,8,0,0">
+              <ListBox.ItemTemplate>
+                <DataTemplate>
+                  <Border Classes="card">
+                    <StackPanel>
+                      <TextBlock Text="{Binding AssetId}" FontWeight="SemiBold" />
+                      <TextBlock Classes="muted">
+                        <Run Text="{Binding Agent}" /><Run Text="  →  " /><Run Text="{Binding PolicySlot}" />
+                      </TextBlock>
+                    </StackPanel>
+                  </Border>
+                </DataTemplate>
+              </ListBox.ItemTemplate>
+            </ListBox>
+          </DockPanel>
+        </TabItem>
+
+        <!-- 4 Audit -->
+        <TabItem Header="Audit">
+          <DockPanel Margin="8,0,0,0">
+            <Button DockPanel.Dock="Bottom" Content="Clear view" Command="{Binding ClearAuditCommand}"
+              HorizontalAlignment="Left" Margin="0,8,0,0" />
+            <ListBox ItemsSource="{Binding Audit}">
+              <ListBox.ItemTemplate>
+                <DataTemplate>
+                  <Border Classes="card">
+                    <StackPanel>
+                      <TextBlock FontWeight="SemiBold">
+                        <Run Text="{Binding Time}" /><Run Text="   " /><Run Text="{Binding Event}" />
+                      </TextBlock>
+                      <TextBlock Classes="muted" TextWrapping="Wrap">
+                        <Run Text="{Binding Operation}" /><Run Text="  on  " /><Run Text="{Binding Target}" />
+                      </TextBlock>
+                      <TextBlock Classes="muted" TextWrapping="Wrap" Text="{Binding Details}" />
+                    </StackPanel>
+                  </Border>
+                </DataTemplate>
+              </ListBox.ItemTemplate>
+            </ListBox>
+          </DockPanel>
+        </TabItem>
+
+        <!-- 5 Telemetry & Model -->
+        <TabItem Header="Telemetry &amp; Model">
+          <ScrollViewer Margin="8,0,0,0">
+            <StackPanel Spacing="0">
+              <Border Classes="card">
+                <StackPanel Spacing="4">
+                  <TextBlock Text="Sidecar contract (frozen checkpoint geometry)" Classes="section" />
+                  <TextBlock Text="{Binding Contract}" />
+                  <TextBlock Text="Sidecar health" Classes="section" />
+                  <TextBlock Text="{Binding Health}" />
+                  <TextBlock Text="Mapping" Classes="section" />
+                  <TextBlock Text="{Binding MappingSummary}" TextWrapping="Wrap" />
+                </StackPanel>
+              </Border>
+              <Border Classes="card">
+                <StackPanel Spacing="4">
+                  <TextBlock Text="About this app" Classes="section" />
+                  <TextBlock Classes="muted" TextWrapping="Wrap"
+                    Text="Weights stay in Python (MAPPO/PyTorch sidecar) — this app ships no model code, computes no observations, and performs no enforcement in-process. Approvals travel to the sidecar, which owns the single-ownership queue, the validator gates, and the backends." />
+                </StackPanel>
+              </Border>
+            </StackPanel>
+          </ScrollViewer>
+        </TabItem>
+      </TabControl>
+    </DockPanel>
+  </DockPanel>
+</Window>

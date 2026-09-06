@@ -16,7 +16,7 @@ Later this file can also contain
 
 import numpy as np
 
-from config import (
+from .config import (
     GAMMA,
     GAE_LAMBDA,
 )

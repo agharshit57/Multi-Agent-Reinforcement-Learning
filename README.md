@@ -39,6 +39,7 @@ This project addresses each of these directly, rather than treating MAPPO as an 
 - [Training](#training)
 - [Evaluation](#evaluation)
 - [Checkpoints & Logs](#checkpoints--logs)
+- [Deployment (real-world serving)](#deployment-real-world-serving)
 
 ## Repository Structure
 
@@ -52,6 +53,19 @@ This project addresses each of these directly, rather than treating MAPPO as an 
 │   ├── Simulator/           # Core simulator: actions (abstract/concrete/decoy/exploit/escalate), green actions
 │   └── Tests/                # Unit and acceptance tests for CC4, Green/Red agents
 ├── evaluation/              # Training logs and evaluation plots/output
+├── Deployement/             # Real-world deployment layer (see below)
+│   ├── endpoint_sensors.py    # Genuine OS sensing: processes, TCP, services, alert feeds (Win/Linux)
+│   ├── network_inventory.py   # ARP, subnets, declared fleet, multi-host topology, FleetCollector
+│   ├── real_world.py          # REAL assets/topology (source of truth, never CC4 names)
+│   ├── policy_adapter.py      # Isolated real→CC4 slot mapping (deterministic, audited)
+│   ├── real_actions.py        # Policy decision → real-operation plans + phantom-target refusals
+│   ├── real_pipeline.py       # RealWorldPipeline (frozen layers composed, all safety modes)
+│   ├── inference_service.py + sidecar.py  # Loopback HTTP sidecar, schema real-first/v1
+│   ├── gui.py                 # Legacy Python/Tkinter console (reference/fallback)
+│   ├── fleet.example.json     # Declared-fleet example
+│   ├── REAL_FIRST_ARCHITECTURE.md  # Corrected architecture + component reality labels
+│   ├── CyberMarl.Deployment/  # C# SOC consoles: WPF App (Windows) + AvaloniaApp (Linux)
+│   └── tests/                 # 222 deployment tests (mapping, sensors, failure cases, gates)
 ├── Marl/
 │   ├── gnn/                  # GNN models and environment wrapper for the actor/critic
 │   └── mappo/                # Core MAPPO implementation
@@ -156,6 +170,51 @@ Available options for `--red-agent` are `random`, `finite`, or `both`.
 
 - `checkpoints/` — serialized model weights saved periodically during training.
 - `evaluation/` — training curves, evaluation results, and diagnostic plots (e.g. explained variance, per-red-agent-type performance breakdowns).
+
+## Deployment (real-world serving)
+
+`Deployement/` serves the frozen CC4 MAPPO policy (`checkpoints/fixedMaybe/mappo_final.pt`) against **real networks** — training/simulation code is never modified. Full design: `Deployement/REAL_FIRST_ARCHITECTURE.md`.
+
+**Core idea (three-way separation).** The real environment is the source of truth; CC4 zones/host slots are strictly an internal policy abstraction:
+
+```
+REAL telemetry (OS sensors, ARP, fleet, detector feeds)
+  → normalized real state → PolicyAdapter → exact 210-dim obs
+  → MAPPO inference → action mask → policy action
+  → real-world action translation → validation/approval → execution
+```
+
+- **REAL**: OS sensors (`tasklist`/`/proc`, `netstat`/`/proc/net/tcp`, `sc`/`systemctl`), ARP/subnet observation, frozen-checkpoint inference, validator/executor safety gates, audit.
+- **Adapter-dependent**: declared fleet file, detector alert feeds, remote agents (interfaces provided; missing = loud "no coverage", never invented data).
+- **Mock/simulated**: mock policy, demo timeline, mock executors — dry-run tools, never presented as real.
+- **Never**: invented processes/connections, inferred compromise (only explicit detector kinds, decided by the frozen normalizer), guessed subnets, or CC4 names shown as infrastructure. Uncovered assets read STALE, never healthy. Safety modes `shadow/mock/supervised/live` (+ live opt-in, approvals, idempotency, phantom-target guards) are preserved end to end.
+
+**Run (Windows):**
+
+```bat
+:: sidecar with genuine local sensing
+set INFERENCE_TOKEN=dev-token-123
+python -m Deployement.sidecar --port 8410 --policy mock --mode shadow
+:: fleet + detector feed
+python -m Deployement.sidecar --port 8410 --policy mock --mode shadow --fleet --inventory Deployement\fleet.example.json
+:: legacy Tkinter console
+python -m Deployement.app --demo --gui --mode mock
+```
+
+**Run (Linux / WSL Ubuntu):** same Python sidecar (native `/proc` sensors), plus the separate Avalonia GUI:
+
+```bash
+export INFERENCE_TOKEN=dev-token-123
+python3 -m Deployement.sidecar --port 8410 --policy mock --mode shadow --fleet
+# new terminal:
+sudo apt-get install -y libice6 libsm6 libx11-6 libxcursor1 libxrandr2 libxi6  # one time
+export INFERENCE_URL=http://127.0.0.1:8410 INFERENCE_TOKEN=dev-token-123
+dotnet run --project Deployement/CyberMarl.Deployment/src/Avalonia -c Release
+```
+
+**C# consoles** (`Deployement/CyberMarl.Deployment/`): WPF `App` (Windows) and Avalonia `AvaloniaApp` (Linux) share Core + the same ViewModels — real-assets hero view, approvals, audit; CC4 mapping quarantined to a warning-bannered technical tab. Weights stay in Python (loopback sidecar, Bearer auth, contract guard 210/242/137). Build all: `dotnet build Deployement\CyberMarl.Deployment\CyberMarl.Deployment.sln -c Release`.
+
+**Tests:** `python -m pytest Deployement/tests/ -q` — **222 passed on Windows and on WSL Ubuntu 24.04** (needs `numpy`, `pytest`, CPU `torch` there for the torch-gated tests), covering frozen contracts, real→policy mapping, sensor parsers (Win+Linux fixtures), telemetry failure cases, safety gates, and the sidecar protocol.
 
 ---
 

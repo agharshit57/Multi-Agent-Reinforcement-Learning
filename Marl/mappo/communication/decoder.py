@@ -188,10 +188,53 @@ class MessageDecoder(nn.Module):
     # Conditional target_id selection (shared by sample/evaluate)
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _masked_host_logits(
+        host_logits: torch.Tensor,
+        host_valid_mask: torch.Tensor,
+    ) -> torch.Tensor:
+        """
+        Mask per-episode-invalid HOST ids out of the target distribution
+        BEFORE sampling/scoring (never sample-then-discard).
+
+        host_valid_mask ([B] or [B, H] bool) uses the STABLE host order
+        (env.STABLE_HOST_LIST, the same mapping as ground truth): True
+        = the host exists in this episode inside the sender's own slots.
+        Out-of-zone hostnames, routers (no observation slots), and
+        nonexistent hosts are False. Subnet ids need no mask (fixed set
+        of 9, always present).
+
+        A row with zero valid ids falls back to unmasked (mirroring the
+        action-mask Sleep safety net) so sampling can never hit an
+        all -inf row; in practice every zone always has >=4 real hosts.
+        """
+        valid = host_valid_mask.to(dtype=torch.bool)
+        if valid.dim() == 1:
+            valid = valid.unsqueeze(0)
+        if valid.shape[-1] != host_logits.shape[-1]:
+            raise ValueError(
+                "host_valid_mask last dim "
+                f"{valid.shape[-1]} does not match host vocabulary "
+                f"{host_logits.shape[-1]} -- mask and head disagree on "
+                "the stable host order."
+            )
+        if valid.shape[0] == 1 and host_logits.shape[0] > 1:
+            valid = valid.expand(host_logits.shape[0], -1)
+        if valid.shape[0] != host_logits.shape[0]:
+            raise ValueError(
+                "host_valid_mask batch "
+                f"{valid.shape[0]} does not match logits batch "
+                f"{host_logits.shape[0]}."
+            )
+        row_has_valid = valid.any(dim=-1, keepdim=True)
+        safe_valid = valid | ~row_has_valid
+        return host_logits.masked_fill(~safe_valid, -1e10)
+
     def _sample_target_id(
         self,
         outputs: Dict[str, torch.Tensor],
         target_type_ids: torch.Tensor,
+        host_valid_mask: torch.Tensor = None,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Sample target_id for a whole batch, per-row selecting HOST vs
@@ -202,6 +245,11 @@ class MessageDecoder(nn.Module):
         NONE rows get target_id=0 (placeholder, never used downstream --
         see schema.py: target_id is ignored when target_type is NONE)
         and log_prob=entropy=0.0 -- NONE never trains a target_id.
+
+        host_valid_mask (optional) restricts the HOST head to
+        per-episode-valid ids BEFORE sampling -- see
+        _masked_host_logits(). The mask must use the STABLE host
+        order; SUBNET/NONE rows are unaffected.
         """
 
         batch_shape = target_type_ids.shape
@@ -215,7 +263,12 @@ class MessageDecoder(nn.Module):
         is_subnet = target_type_ids == int(TargetType.SUBNET)
 
         if outputs["host_target_logits"] is not None:
-            host_dist = Categorical(logits=outputs["host_target_logits"])
+            host_logits = outputs["host_target_logits"]
+            if host_valid_mask is not None:
+                host_logits = self._masked_host_logits(
+                    host_logits, host_valid_mask
+                )
+            host_dist = Categorical(logits=host_logits)
             host_sample = host_dist.sample()
             target_id = torch.where(is_host, host_sample, target_id)
             log_prob = torch.where(is_host, host_dist.log_prob(host_sample), log_prob)
@@ -235,6 +288,7 @@ class MessageDecoder(nn.Module):
         outputs: Dict[str, torch.Tensor],
         target_type_ids: torch.Tensor,
         target_id: torch.Tensor,
+        host_valid_mask: torch.Tensor = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Recompute target_id's log_prob/entropy for a whole batch of
@@ -254,6 +308,11 @@ class MessageDecoder(nn.Module):
         message) -- rows where that head isn't the one actually selected
         by target_type are masked out immediately after regardless of
         what this defensive dummy lookup computes.
+
+        host_valid_mask (optional) applies the IDENTICAL validity
+        semantics as sampling (see _masked_host_logits): the stored id
+        was sampled under this same episode's mask, so replaying under
+        it keeps old/new log-probs comparable for the PPO ratio.
         """
 
         batch_shape = target_type_ids.shape
@@ -266,7 +325,12 @@ class MessageDecoder(nn.Module):
         is_subnet = target_type_ids == int(TargetType.SUBNET)
 
         if outputs["host_target_logits"] is not None:
-            host_dist = Categorical(logits=outputs["host_target_logits"])
+            host_logits = outputs["host_target_logits"]
+            if host_valid_mask is not None:
+                host_logits = self._masked_host_logits(
+                    host_logits, host_valid_mask
+                )
+            host_dist = Categorical(logits=host_logits)
             safe_target_id = target_id.clamp(0, host_dist.logits.shape[-1] - 1)
             log_prob = torch.where(is_host, host_dist.log_prob(safe_target_id), log_prob)
             entropy = torch.where(is_host, host_dist.entropy(), entropy)
@@ -284,7 +348,7 @@ class MessageDecoder(nn.Module):
     # ------------------------------------------------------------------
 
     def sample_message(
-        self, hidden: torch.Tensor
+        self, hidden: torch.Tensor, host_valid_mask: torch.Tensor = None
     ) -> Tuple[Dict[str, torch.Tensor], Dict[str, torch.Tensor], Dict[str, torch.Tensor]]:
         """
         Sample a discrete structured message from the current policy.
@@ -292,6 +356,11 @@ class MessageDecoder(nn.Module):
         target_id (a single field, matching schema.py's 7-field
         MESSAGE_FIELDS) is populated conditionally on this SAME call's
         sampled target_type -- see _sample_target_id().
+
+        host_valid_mask (optional [B] or [B, H] bool, STABLE host
+        order) masks per-episode-invalid HOST ids BEFORE sampling --
+        see _masked_host_logits(). None preserves the legacy unmasked
+        behavior.
 
         Returns
         -------
@@ -313,7 +382,7 @@ class MessageDecoder(nn.Module):
             entropies[field] = dist.entropy()
 
         target_id, target_log_prob, target_entropy = self._sample_target_id(
-            outputs, field_ids["target_type"]
+            outputs, field_ids["target_type"], host_valid_mask
         )
         field_ids["target_id"] = target_id
         log_probs["target_id"] = target_log_prob
@@ -322,7 +391,10 @@ class MessageDecoder(nn.Module):
         return field_ids, log_probs, entropies
 
     def evaluate_message(
-        self, hidden: torch.Tensor, field_ids: Dict[str, torch.Tensor]
+        self,
+        hidden: torch.Tensor,
+        field_ids: Dict[str, torch.Tensor],
+        host_valid_mask: torch.Tensor = None,
     ) -> Tuple[Dict[str, torch.Tensor], Dict[str, torch.Tensor]]:
         """
         Recompute log_prob/entropy of a STORED sample under current parameters.
@@ -331,6 +403,12 @@ class MessageDecoder(nn.Module):
 
         target_id's log_prob/entropy are recomputed via the head selected
         by the STORED target_type -- see _evaluate_target_id().
+
+        host_valid_mask (optional [B] or [B, H] bool, STABLE host order)
+        must carry the IDENTICAL validity semantics as sampling (same
+        episode's mask): the stored id was sampled under it, so replaying
+        under it keeps old/new log-probs comparable. None preserves the
+        legacy unmasked behavior.
         """
         outputs = self.forward(hidden)
 
@@ -344,7 +422,10 @@ class MessageDecoder(nn.Module):
 
         if "target_id" in field_ids:
             target_log_prob, target_entropy = self._evaluate_target_id(
-                outputs, field_ids["target_type"], field_ids["target_id"]
+                outputs,
+                field_ids["target_type"],
+                field_ids["target_id"],
+                host_valid_mask,
             )
             log_probs["target_id"] = target_log_prob
             entropies["target_id"] = target_entropy

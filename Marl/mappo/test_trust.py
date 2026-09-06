@@ -20,7 +20,7 @@ import torch
 
 CHECKPOINT_PATH = (
     "/mnt/c/cyber/cage-challenge-4/"
-    "checkpoints/groundTruth/mappo_final.pt"
+    "checkpoints/fixedMaybe/mappo_ep250.pt"
 )
 
 

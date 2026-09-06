@@ -124,7 +124,7 @@ from .communication.schema import (
 
 CHECKPOINT_PATH = (
     "/mnt/c/cyber/cage-challenge-4/"
-    "checkpoints/gnn_attention_AAM_newMappo/mappo_final.pt"
+    "checkpoints/fixedMaybe/mappo_ep500.pt"
 )
 
 # How many steps to advance the environment (random Blue actions --
@@ -702,19 +702,51 @@ def run_receiver_model(
 # Display
 # ============================================================================
 
-def format_target(message: StructuredMessage) -> str:
+def format_target(message: StructuredMessage, env: CC4Env) -> str:
+
+    state = env.cyborg.environment_controller.state
 
     if message.target_type == TargetType.HOST:
-        return f"Host_id={message.target_id}"
+        hostnames = sorted(state.hosts.keys())
+
+        if not (0 <= message.target_id < len(hostnames)):
+            return (
+                f"Host_id={message.target_id} "
+                f"(INVALID HOST TARGET ID)"
+            )
+
+        return (
+            f"Host_id={message.target_id} "
+            f"({hostnames[message.target_id]})"
+        )
 
     if message.target_type == TargetType.SUBNET:
-        return f"Subnet_id={message.target_id} (no subnet vocabulary exists -- see schema.py)"
+        subnet_names = sorted(
+            state.subnet_name_to_cidr.keys()
+        )
+
+        if not (0 <= message.target_id < len(subnet_names)):
+            return (
+                f"Subnet_id={message.target_id} "
+                f"(INVALID SUBNET TARGET ID)"
+            )
+
+        return (
+            f"Subnet_id={message.target_id} "
+            f"({subnet_names[message.target_id]})"
+        )
 
     return "None"
 
 
-def print_manual_input(sender: int, receivers: List[int], message: StructuredMessage) -> None:
-
+# def print_manual_input(sender: int, receivers: List[int], message: StructuredMessage) -> None:
+def print_manual_input(
+    env: CC4Env,
+    sender: int,
+    receivers: List[int],
+    message: StructuredMessage,
+) -> None:
+    
     print()
     print("=" * 72)
     print("MANUAL INPUT")
@@ -726,11 +758,68 @@ def print_manual_input(sender: int, receivers: List[int], message: StructuredMes
     )
     print(f"Event:        {message.event_type.name}")
     print(f"Target Type:  {message.target_type.name}")
-    print(f"Target:       {format_target(message)}")
+    print(f"Target:       {format_target(message,env)}")
     print(f"Threat Level: {message.threat_level.name}")
     print(f"Confidence:   {message.confidence:.3f}")
     print(f"Status:       {message.status.name}")
     print(f"Priority:     {message.priority.name}")
+
+
+def print_target_mapping(
+        env: CC4Env,
+        target_id: int,
+        agent_names,
+        action_ids,
+    ):
+        """
+        Show exactly what a HOST communication target_id refers to,
+        and compare it with the hostname targeted by each selected action.
+        """
+
+        state = env.cyborg.environment_controller.state
+
+        # Communication HOST target mapping
+        hostnames = sorted(state.hosts.keys())
+
+        if not (0 <= target_id < len(hostnames)):
+            print(f"ERROR: target_id {target_id} is outside current host list.")
+            return
+
+        message_hostname = hostnames[target_id]
+
+        print()
+        print("=" * 72)
+        print("TARGET-ID -> ACTION TARGET VERIFICATION")
+        print("=" * 72)
+
+        print(f"Communication target_id : {target_id}")
+        print(f"Communication hostname  : {message_hostname}")
+
+        print()
+        print("Selected actions:")
+
+        for receiver, action_id in action_ids.items():
+
+            labels = env.action_labels(agent_names[receiver])
+            actions = env.actions(agent_names[receiver])
+
+            print()
+            print(f"Agent_{receiver + 1}")
+            print(f"  action_id : {action_id}")
+
+            if action_id >= len(labels):
+                print("  ERROR: invalid action index")
+                continue
+
+            print(f"  label     : {labels[action_id]}")
+            print(f"  object    : {actions[action_id]}")
+
+            action_text = str(actions[action_id])
+
+            if message_hostname.lower() in action_text.lower():
+                print("  TARGET MATCH: YES")
+            else:
+                print("  TARGET MATCH: NO")
 
 
 def print_encoded_vector(vector: torch.Tensor) -> None:
@@ -840,8 +929,8 @@ def main() -> None:
     sender = choose_agent(NUM_AGENTS, "Sender")
     receivers = choose_receivers(sender, NUM_AGENTS)
     message = build_manual_message(num_host_targets, num_subnet_targets)
+    print_manual_input(env, sender, receivers, message)
 
-    print_manual_input(sender, receivers, message)
 
     # ------------------------------------------------------------------
     # Encode with the real trained encoder
@@ -860,7 +949,6 @@ def main() -> None:
     print("=" * 72)
 
     results = {}
-
     for receiver in receivers:
 
         result = run_receiver_model(
@@ -876,6 +964,28 @@ def main() -> None:
         results[receiver] = result
 
         print_receiver_prediction(sender, receiver, result)
+
+    # ------------------------------------------------------------------
+    # Verify communication target_id against predicted action target
+    # ------------------------------------------------------------------
+
+    if message.target_type == TargetType.HOST:
+
+        action_ids = {
+            receiver: results[receiver]["message_action"]
+            for receiver in receivers
+        }
+
+        print_target_mapping(
+            env=env,
+            target_id=message.target_id,
+            agent_names=agent_names,
+            action_ids=action_ids,
+        )
+
+    # ------------------------------------------------------------------
+    # Frozen trust summary
+    # ------------------------------------------------------------------
 
     # ------------------------------------------------------------------
     # Frozen trust summary
@@ -916,6 +1026,8 @@ def main() -> None:
         "PREDICTION was computed by a real forward pass through the "
         "checkpoint's trained SharedActor."
     )
+
+
 
 
 if __name__ == "__main__":

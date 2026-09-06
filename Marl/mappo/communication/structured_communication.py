@@ -193,6 +193,7 @@ class StructuredCommunication(nn.Module):
     def generate_message(
             self,
             hidden: torch.Tensor,
+            host_valid_mask: torch.Tensor = None,
         ) -> tuple[
             Dict[str, torch.Tensor],
             Dict[str, torch.Tensor],
@@ -201,6 +202,11 @@ class StructuredCommunication(nn.Module):
         ]:
             """
             Sample a structured communication message and encode it.
+
+            host_valid_mask (optional [B] or [B, H] bool, STABLE host
+            order) masks per-episode-invalid HOST ids BEFORE sampling --
+            see MessageDecoder._masked_host_logits(). None preserves the
+            legacy unmasked behavior.
 
             Returns
             -------
@@ -221,11 +227,12 @@ class StructuredCommunication(nn.Module):
                 hidden = hidden.unsqueeze(0)
 
             # ------------------------------------------------------------
-            # V2 decoder
+            # V2 decoder (mask shapes are validated/expanded inside
+            # MessageDecoder._masked_host_logits)
             # ------------------------------------------------------------
 
             field_ids, log_probs, entropies = (
-                self.decoder.sample_message(hidden)
+                self.decoder.sample_message(hidden, host_valid_mask)
             )
 
             # ------------------------------------------------------------
@@ -249,6 +256,7 @@ class StructuredCommunication(nn.Module):
             self,
             hidden: torch.Tensor,
             field_ids: Dict[str, torch.Tensor],
+            host_valid_mask: torch.Tensor = None,
         ) -> tuple[
             Dict[str, torch.Tensor],
             Dict[str, torch.Tensor],
@@ -257,6 +265,11 @@ class StructuredCommunication(nn.Module):
             Re-evaluate a stored message under the current decoder.
 
             Used during PPO updates.
+
+            host_valid_mask (optional [B] or [B, H] bool, STABLE host
+            order) must carry the IDENTICAL validity semantics as
+            sampling (same episode's mask) so old/new log-probs stay
+            comparable. None preserves the legacy unmasked behavior.
 
             Returns
             -------
@@ -272,6 +285,7 @@ class StructuredCommunication(nn.Module):
             return self.decoder.evaluate_message(
                 hidden,
                 field_ids,
+                host_valid_mask,
             )
 
     # ==================================================================

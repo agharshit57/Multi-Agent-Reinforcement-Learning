@@ -878,7 +878,7 @@ class SharedActor(nn.Module):
         # attend to each sender.
         # --------------------------------------------------
 
-        key_padding_mask = None
+        trust_bias = None
 
         if trust is not None:
 
@@ -902,13 +902,19 @@ class SharedActor(nn.Module):
                 max=1.0,
             )
 
-            trust_bias = torch.log(
-                trust_safe
-            )
-
             values = (
                 values
                 * trust_safe.unsqueeze(-1)
+            )
+
+            # Actually feed the bias into attention (previously computed
+            # but never used): log(trust) changes the mixture weights,
+            # which is what survives the LayerNorm below.
+            trust_bias = torch.log(trust_safe).unsqueeze(1).to(
+                dtype=local_hidden.dtype
+            )
+            trust_bias = trust_bias.repeat_interleave(
+                self.communication_attention.num_heads, dim=0
             )
 
         # --------------------------------------------------
@@ -929,6 +935,7 @@ class SharedActor(nn.Module):
                 keys,
                 values,
                 need_weights=True,
+                attn_mask=trust_bias,
             )
         )
 
