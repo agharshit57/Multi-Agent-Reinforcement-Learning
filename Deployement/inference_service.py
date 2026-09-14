@@ -10,10 +10,14 @@ loopback HTTP service instead::
                        -> per-agent {action, label, message, trust_row}
     POST /cycle     -> {real_topology, real_batch} -> one real-world
                        cycle -> {records, real_actions, mapping}
-    POST /approve   -> {index, approver?} -> approve one queued
-                       supervised/live decision exactly once
-                       (single-ownership pop-first, same semantics as
-                       DeploymentPipeline.approve_pending)
+    POST /approve   -> {approval_id?, index?, approver?} -> approve one
+                       queued supervised/live decision exactly once,
+                       by STABLE id (preferred) or current position
+                       (legacy). Unknown ids fail loudly, never pop a
+                       stale position.
+    GET  /approvals  -> full pending-approvals snapshot with stable ids
+                       (the UI must render THIS, not a per-cycle list:
+                       the queue persists across cycles).
 
 Design rules: stdlib only (``http.server``); 127.0.0.1 default;
 shared-secret Bearer auth (``INFERENCE_TOKEN`` env or generated);
@@ -101,7 +105,8 @@ class InferenceService:
                 return hmac.compare_digest(got[len("Bearer "):], want)
 
             def do_GET(self):
-                if self.path not in ("/health", "/contract"):
+                if self.path not in ("/health", "/contract",
+                                     "/approvals"):
                     self._send(404, {"error": "unknown route"})
                     return
                 if not self._authorized():
@@ -109,8 +114,10 @@ class InferenceService:
                     return
                 if self.path == "/health":
                     self._send(200, service.health())
-                else:
+                elif self.path == "/contract":
                     self._send(200, service.contract())
+                else:
+                    self._send(200, service.approvals())
 
             def do_POST(self):
                 if self.path not in ("/decide", "/cycle", "/approve"):
@@ -298,24 +305,43 @@ class InferenceService:
             pipeline.adapter.topology = previous_topology
 
     def approve(self, payload):
-        """Approve one queued decision exactly once (delegated)."""
+        """Approve one queued decision exactly once (delegated).
+
+        By stable ``approval_id`` (preferred) or legacy integer
+        ``index`` (a position in a freshly-read /approvals snapshot).
+        At least one must be present.
+        """
         if self.real_pipeline is None:
             raise InferenceServiceError(
                 "this sidecar serves /decide only (no pipeline "
                 "attached)")
-        if not isinstance(payload, dict) or "index" not in payload:
+        if not isinstance(payload, dict):
             raise InferenceServiceError(
-                "want {'index': int, 'approver': str?}")
-        try:
-            index = int(payload["index"])
-        except (TypeError, ValueError):
+                "want {'approval_id': str?, 'index': int?, "
+                "'approver': str?}")
+        approval_id = payload.get("approval_id")
+        raw_index = payload.get("index", None)
+        if approval_id is None and raw_index is None:
             raise InferenceServiceError(
-                f"approval index must be an int, got "
-                f"{payload.get('index')!r}")
+                "want {'approval_id': str?, 'index': int?, "
+                "'approver': str?}")
+        index = None
+        if raw_index is not None:
+            try:
+                index = int(raw_index)
+            except (TypeError, ValueError):
+                raise InferenceServiceError(
+                    f"approval index must be an int, got "
+                    f"{raw_index!r}")
+        if approval_id is not None and not isinstance(approval_id, str):
+            raise InferenceServiceError(
+                f"approval_id must be a string, got "
+                f"{approval_id!r}")
         approver = str(payload.get("approver", "csharp-operator"))
         try:
             result = self.real_pipeline.approve_pending(
-                index, approver=approver)
+                index=index, approver=approver,
+                approval_id=approval_id)
         except IndexError as exc:
             raise InferenceServiceError(str(exc)) from exc
         except Exception as exc:
@@ -323,6 +349,7 @@ class InferenceService:
                 f"approval failure: {type(exc).__name__}: "
                 f"{exc}") from exc
         return {"schema": SCHEMA_VERSION,
+                "approval_id": approval_id,
                 "operation": result.operation,
                 "target": result.target,
                 "applied": bool(result.applied),
@@ -331,6 +358,47 @@ class InferenceService:
                 "backend": result.backend,
                 "error": result.error,
                 "details": result.details}
+
+    def approvals(self):
+        """Pending-approvals snapshot with stable ids (read-only).
+
+        The UI renders this list (not per-cycle positions): entries
+        persist across cycles until approved/denied, each addressable
+        by its approval_id.
+        """
+        if self.real_pipeline is None:
+            raise InferenceServiceError(
+                "this sidecar serves /decide only (no pipeline "
+                "attached)")
+        from .validator import ActionValidator
+        entries = []
+        pending = getattr(getattr(self.real_pipeline, "inner", None),
+                          "enforcement", None)
+        queue = getattr(pending, "pending_approvals", []) or []
+        for position, entry in enumerate(queue):
+            if not isinstance(entry, dict):
+                continue
+            command = str(entry.get("command", "") or "")
+            try:
+                risk = ActionValidator.risk_of(command)
+            except Exception:
+                risk = "?"
+            asset = entry.get("asset")
+            if isinstance(asset, dict):
+                asset_text = str(asset.get("ip", "")
+                                 or asset.get("hostname", "") or "")
+            else:
+                asset_text = str(asset or "")
+            entries.append({
+                "position": position,
+                "approval_id": entry.get("approval_id"),
+                "operation": str(entry.get("operation", "") or ""),
+                "command": command,
+                "target": str(entry.get("target", "") or ""),
+                "asset": asset_text,
+                "risk": risk,
+                "attempts": int(entry.get("attempts", 0) or 0)})
+        return {"schema": SCHEMA_VERSION, "approvals": entries}
 
 
 def _dto_topology(dto, RealAsset, RealSegment, RealTopology):

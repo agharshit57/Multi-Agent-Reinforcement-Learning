@@ -5,17 +5,23 @@
        startup). Adding one back opens a second window. -->
   <Application.Resources>
     <ResourceDictionary>
-      <!-- Readable dark SOC theme. Every foreground on every background
-           below is >= ~4.5:1 contrast. -->
-      <Color x:Key="Bg">#0B0F14</Color>
-      <Color x:Key="Surface">#121924</Color>
-      <Color x:Key="Surface2">#1A2433</Color>
-      <Color x:Key="Hover">#223150</Color>
-      <Color x:Key="Active">#1E3A5F</Color>
-      <Color x:Key="Border">#2B3A4F</Color>
-      <Color x:Key="Text">#F2F5F9</Color>
-      <Color x:Key="Muted">#A9B6C6</Color>
-      <Color x:Key="Accent">#4DA3FF</Color>
+      <!-- Black & yellow SOC theme. Near-black surfaces, warm-white
+           text, signal yellow reserved for primary actions, active
+           navigation and selection. Status colors stay semantic
+           (red/green/amber) so they keep their meaning. -->
+      <Color x:Key="Bg">#0A0A0B</Color>
+      <Color x:Key="Surface">#141417</Color>
+      <Color x:Key="Surface2">#1E1E24</Color>
+      <Color x:Key="Hover">#2A2A31</Color>
+      <Color x:Key="Active">#3A2E00</Color>
+      <Color x:Key="Border">#2C2C33</Color>
+      <Color x:Key="Text">#F5F3EA</Color>
+      <Color x:Key="Muted">#A8A496</Color>
+      <Color x:Key="Accent">#FFC400</Color>
+      <Color x:Key="AccentBright">#FFD336</Color>
+      <Color x:Key="AccentDeep">#C79400</Color>
+      <Color x:Key="AccentText">#FFD75E</Color>
+      <Color x:Key="Ink">#141414</Color>
       <Color x:Key="Danger">#FF7070</Color>
       <Color x:Key="Warn">#FFB020</Color>
       <Color x:Key="Ok">#3FD68C</Color>
@@ -31,6 +37,10 @@
       <SolidColorBrush x:Key="OkBrush" Color="{StaticResource Ok}" />
       <SolidColorBrush x:Key="ActiveBrush" Color="{StaticResource Active}" />
       <SolidColorBrush x:Key="HoverBrush" Color="{StaticResource Hover}" />
+      <SolidColorBrush x:Key="AccentBrightBrush" Color="{StaticResource AccentBright}" />
+      <SolidColorBrush x:Key="AccentDeepBrush" Color="{StaticResource AccentDeep}" />
+      <SolidColorBrush x:Key="AccentTextBrush" Color="{StaticResource AccentText}" />
+      <SolidColorBrush x:Key="InkBrush" Color="{StaticResource Ink}" />
       <SolidColorBrush x:Key="BorderBrush" Color="{StaticResource Border}" />
 
       <Style TargetType="Window">
@@ -93,6 +103,7 @@
                       SnapsToDevicePixels="True">
                 <ContentPresenter HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
                                   VerticalAlignment="{TemplateBinding VerticalContentAlignment}"
+                                  TextElement.Foreground="{TemplateBinding Foreground}"
                                   RecognizesAccessKey="True" />
               </Border>
               <ControlTemplate.Triggers>
@@ -114,9 +125,42 @@
       </Style>
 
       <Style x:Key="PrimaryButton" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
-        <Setter Property="Background" Value="#1D4E89" />
-        <Setter Property="BorderBrush" Value="#2F6BB0" />
+        <!-- Signal-yellow action button, black text. Own template so
+             hover/pressed stay in the yellow family instead of the
+             default dark hover. -->
+        <Setter Property="Background" Value="{StaticResource AccentBrush}" />
+        <Setter Property="Foreground" Value="{StaticResource InkBrush}" />
+        <Setter Property="BorderBrush" Value="{StaticResource AccentDeepBrush}" />
         <Setter Property="FontWeight" Value="SemiBold" />
+        <Setter Property="Template">
+          <Setter.Value>
+            <ControlTemplate TargetType="Button">
+              <Border x:Name="Chrome" Background="{TemplateBinding Background}"
+                      BorderBrush="{TemplateBinding BorderBrush}"
+                      BorderThickness="{TemplateBinding BorderThickness}"
+                      CornerRadius="6" Padding="{TemplateBinding Padding}"
+                      SnapsToDevicePixels="True">
+                <ContentPresenter HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
+                                  VerticalAlignment="{TemplateBinding VerticalContentAlignment}"
+                                  TextElement.Foreground="{TemplateBinding Foreground}"
+                                  RecognizesAccessKey="True" />
+              </Border>
+              <ControlTemplate.Triggers>
+                <Trigger Property="IsMouseOver" Value="True">
+                  <Setter TargetName="Chrome" Property="Background" Value="{StaticResource AccentBrightBrush}" />
+                </Trigger>
+                <Trigger Property="IsPressed" Value="True">
+                  <Setter TargetName="Chrome" Property="Background" Value="{StaticResource AccentDeepBrush}" />
+                </Trigger>
+                <Trigger Property="IsEnabled" Value="False">
+                  <Setter TargetName="Chrome" Property="Background" Value="{StaticResource SurfaceBrush}" />
+                  <Setter TargetName="Chrome" Property="BorderBrush" Value="{StaticResource BorderBrush}" />
+                  <Setter Property="Foreground" Value="{StaticResource MutedBrush}" />
+                </Trigger>
+              </ControlTemplate.Triggers>
+            </ControlTemplate>
+          </Setter.Value>
+        </Setter>
       </Style>
 
       <Style x:Key="SidebarButton" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
@@ -137,7 +181,7 @@
       </Style>
 
       <Style TargetType="TextBox">
-        <Setter Property="Background" Value="#0E1520" />
+        <Setter Property="Background" Value="#101014" />
         <Setter Property="Foreground" Value="{StaticResource TextBrush}" />
         <Setter Property="CaretBrush" Value="{StaticResource TextBrush}" />
         <Setter Property="BorderBrush" Value="{StaticResource BorderBrush}" />
@@ -172,7 +216,7 @@
         <Setter Property="Background" Value="{StaticResource SurfaceBrush}" />
         <Setter Property="Foreground" Value="{StaticResource TextBrush}" />
         <Setter Property="RowBackground" Value="{StaticResource SurfaceBrush}" />
-        <Setter Property="AlternatingRowBackground" Value="#131C29" />
+        <Setter Property="AlternatingRowBackground" Value="#17171B" />
         <Setter Property="GridLinesVisibility" Value="None" />
         <Setter Property="HeadersVisibility" Value="Column" />
         <Setter Property="AutoGenerateColumns" Value="False" />

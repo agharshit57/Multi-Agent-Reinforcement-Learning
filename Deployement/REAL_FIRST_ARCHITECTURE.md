@@ -130,6 +130,37 @@ frozen normalizer); no guessed subnets; broadcast/multicast never
 become assets; corrupt feeds are refused, not interpreted; uncovered
 reads STALE, never quiet; overflow stays inventory-only.
 
+## 8. Live-path hardening (reported failure modes, fixed + pinned)
+
+Three safety/consistency guarantees whose implementations quietly
+defeated themselves, all in the live-execution/approval path
+(`Deployement/tests/test_live_safety.py` pins each):
+
+1. **Phantom guard type-mismatch** (`real_actions.py`): the guard
+   inspected dict-shaped assets only, but `LiveExecutor._real_asset`
+   collapses the asset to a plain string before backends see it -- so
+   it never fired in production while a dict-only unit test claimed it
+   worked. `is_phantom_asset` now accepts both shapes (TEST-NET-3 /
+   `unpopulated-policy-slot-*` match either way); anything else is not
+   phantom. Fail-closed: an operator machine literally named like a
+   placeholder is refused, never executed against.
+2. **Approval position-aliasing** (`pipeline.py`, `executor.py`,
+   `inference_service.py`, both UIs): the C# console numbered queued
+   actions 0..N per cycle while the server queue persists across
+   cycles, so approving after a new cycle could pop an older, unrelated
+   decision while the stale row silently vanished from the UI. Every
+   queued entry now carries a stable `approval_id` (minted once at
+   queue time, preserved across approve/re-queue retries);
+   `approve_pending` resolves ids to current positions (legacy integer
+   positions still work against a fresh snapshot); the sidecar exposes
+   `GET /approvals` and id-based `POST /approve`; both consoles render
+   the server queue (stable ids, failed attempts retryable) and can no
+   longer address positions at all (empty id refused client-side).
+3. **`run_cmd` fail-safe** (`endpoint_sensors.py`): any non-zero exit
+   is now "unavailable source" even with stdout present (previously a
+   failing-but-chatty command got parsed as telemetry), matching the
+   documented contract and `network_inventory.py`'s existing check.
+
 ## 7. Linux (WSL/Ubuntu) support
 
 * Python deployment is fully Linux-native: sensors dispatch

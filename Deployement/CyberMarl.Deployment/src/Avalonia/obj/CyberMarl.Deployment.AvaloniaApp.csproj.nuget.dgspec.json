@@ -1,20 +1,20 @@
 {
   "format": 1,
   "restore": {
-    "/mnt/c/cyber/cage-challenge-4/Deployement/CyberMarl.Deployment/src/Avalonia/CyberMarl.Deployment.AvaloniaApp.csproj": {}
+    "C:\\cyber\\cage-challenge-4\\Deployement\\CyberMarl.Deployment\\src\\Avalonia\\CyberMarl.Deployment.AvaloniaApp.csproj": {}
   },
   "projects": {
-    "/mnt/c/cyber/cage-challenge-4/Deployement/CyberMarl.Deployment/src/Avalonia/CyberMarl.Deployment.AvaloniaApp.csproj": {
+    "C:\\cyber\\cage-challenge-4\\Deployement\\CyberMarl.Deployment\\src\\Avalonia\\CyberMarl.Deployment.AvaloniaApp.csproj": {
       "version": "1.0.0",
       "restore": {
-        "projectUniqueName": "/mnt/c/cyber/cage-challenge-4/Deployement/CyberMarl.Deployment/src/Avalonia/CyberMarl.Deployment.AvaloniaApp.csproj",
+        "projectUniqueName": "C:\\cyber\\cage-challenge-4\\Deployement\\CyberMarl.Deployment\\src\\Avalonia\\CyberMarl.Deployment.AvaloniaApp.csproj",
         "projectName": "CyberMarl.Deployment.AvaloniaApp",
-        "projectPath": "/mnt/c/cyber/cage-challenge-4/Deployement/CyberMarl.Deployment/src/Avalonia/CyberMarl.Deployment.AvaloniaApp.csproj",
-        "packagesPath": "/home/anirudh/.nuget/packages/",
-        "outputPath": "/mnt/c/cyber/cage-challenge-4/Deployement/CyberMarl.Deployment/src/Avalonia/obj/",
+        "projectPath": "C:\\cyber\\cage-challenge-4\\Deployement\\CyberMarl.Deployment\\src\\Avalonia\\CyberMarl.Deployment.AvaloniaApp.csproj",
+        "packagesPath": "C:\\Users\\aniru\\.nuget\\packages\\",
+        "outputPath": "C:\\cyber\\cage-challenge-4\\Deployement\\CyberMarl.Deployment\\src\\Avalonia\\obj\\",
         "projectStyle": "PackageReference",
         "configFilePaths": [
-          "/home/anirudh/.nuget/NuGet/NuGet.Config"
+          "C:\\Users\\aniru\\AppData\\Roaming\\NuGet\\NuGet.Config"
         ],
         "originalTargetFrameworks": [
           "net8.0"
@@ -26,8 +26,8 @@
           "net8.0": {
             "targetAlias": "net8.0",
             "projectReferences": {
-              "/mnt/c/cyber/cage-challenge-4/Deployement/CyberMarl.Deployment/src/Core/CyberMarl.Deployment.Core.csproj": {
-                "projectPath": "/mnt/c/cyber/cage-challenge-4/Deployement/CyberMarl.Deployment/src/Core/CyberMarl.Deployment.Core.csproj"
+              "C:\\cyber\\cage-challenge-4\\Deployement\\CyberMarl.Deployment\\src\\Core\\CyberMarl.Deployment.Core.csproj": {
+                "projectPath": "C:\\cyber\\cage-challenge-4\\Deployement\\CyberMarl.Deployment\\src\\Core\\CyberMarl.Deployment.Core.csproj"
               }
             }
           }
@@ -36,6 +36,11 @@
           "warnAsError": [
             "NU1605"
           ]
+        },
+        "restoreAuditProperties": {
+          "enableAudit": "true",
+          "auditLevel": "low",
+          "auditMode": "direct"
         }
       },
       "frameworks": {
@@ -71,21 +76,21 @@
               "privateAssets": "all"
             }
           },
-          "runtimeIdentifierGraphPath": "/usr/lib/dotnet/sdk/8.0.130/PortableRuntimeIdentifierGraph.json"
+          "runtimeIdentifierGraphPath": "C:\\Program Files\\dotnet\\sdk\\8.0.424/PortableRuntimeIdentifierGraph.json"
         }
       }
     },
-    "/mnt/c/cyber/cage-challenge-4/Deployement/CyberMarl.Deployment/src/Core/CyberMarl.Deployment.Core.csproj": {
+    "C:\\cyber\\cage-challenge-4\\Deployement\\CyberMarl.Deployment\\src\\Core\\CyberMarl.Deployment.Core.csproj": {
       "version": "1.0.0",
       "restore": {
-        "projectUniqueName": "/mnt/c/cyber/cage-challenge-4/Deployement/CyberMarl.Deployment/src/Core/CyberMarl.Deployment.Core.csproj",
+        "projectUniqueName": "C:\\cyber\\cage-challenge-4\\Deployement\\CyberMarl.Deployment\\src\\Core\\CyberMarl.Deployment.Core.csproj",
         "projectName": "CyberMarl.Deployment.Core",
-        "projectPath": "/mnt/c/cyber/cage-challenge-4/Deployement/CyberMarl.Deployment/src/Core/CyberMarl.Deployment.Core.csproj",
-        "packagesPath": "/home/anirudh/.nuget/packages/",
-        "outputPath": "/mnt/c/cyber/cage-challenge-4/Deployement/CyberMarl.Deployment/src/Core/obj/",
+        "projectPath": "C:\\cyber\\cage-challenge-4\\Deployement\\CyberMarl.Deployment\\src\\Core\\CyberMarl.Deployment.Core.csproj",
+        "packagesPath": "C:\\Users\\aniru\\.nuget\\packages\\",
+        "outputPath": "C:\\cyber\\cage-challenge-4\\Deployement\\CyberMarl.Deployment\\src\\Core\\obj\\",
         "projectStyle": "PackageReference",
         "configFilePaths": [
-          "/home/anirudh/.nuget/NuGet/NuGet.Config"
+          "C:\\Users\\aniru\\AppData\\Roaming\\NuGet\\NuGet.Config"
         ],
         "originalTargetFrameworks": [
           "net8.0"
@@ -103,6 +108,11 @@
           "warnAsError": [
             "NU1605"
           ]
+        },
+        "restoreAuditProperties": {
+          "enableAudit": "true",
+          "auditLevel": "low",
+          "auditMode": "direct"
         }
       },
       "frameworks": {
@@ -124,7 +134,7 @@
               "privateAssets": "all"
             }
           },
-          "runtimeIdentifierGraphPath": "/usr/lib/dotnet/sdk/8.0.130/PortableRuntimeIdentifierGraph.json"
+          "runtimeIdentifierGraphPath": "C:\\Program Files\\dotnet\\sdk\\8.0.424/PortableRuntimeIdentifierGraph.json"
         }
       }
     }

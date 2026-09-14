@@ -19,7 +19,7 @@ quarantined technical view.
 | Sidecar HTTP client + contract guard | C# `Core/InferenceClient` | Refuses schema/contract mismatch loudly |
 | Telemetry → CC4 slots, obs/masks, MAPPO inference | Python `Deployement/` sidecar | `inference_service.py` + frozen layers |
 | Trained weights (PyTorch MAPPO, `mappo_final.pt`) | Python only | Never ported; served over loopback |
-| Approval queue (single-ownership), validator, executor, backends | Python only | C# calls `POST /approve`; owns nothing |
+| Approval queue (single-ownership), validator, executor, backends | Python only | C# calls `POST /approve` with a stable id; owns nothing |
 
 ## Communication (schema `real-first/v1`, loopback only)
 
@@ -64,7 +64,16 @@ processes/services/connections) is activity signal, at most.
 
 Endpoints: `GET /health`, `GET /contract` (client refuses anything but
 `obs 210 / act 242 / vocab 137 / real-first/v1`), `POST /decide`,
-`POST /cycle {topology, batch}`, `POST /approve {index, approver}`.
+`POST /cycle {topology, batch}`, `GET /approvals` (full pending queue
+with stable ids), `POST /approve {approval_id, approver}`.
+
+Approvals are addressed by STABLE `approval_id`, never by queue
+position: the server queue persists across cycles while list positions
+shift, so position-based approval could pop the wrong (older) decision.
+The UI renders `GET /approvals` (nothing silently disappears between
+cycles); unknown ids fail loudly instead of popping a stale position.
+Legacy integer `index` is still accepted by the server against a
+freshly-read snapshot, but no UI uses it.
 `POST /cycle` is shadow-safe by pipeline mode; live execution additionally
 needs the Python `--enable-live` equivalent (a configured real backend —
 default refuses loudly) plus the C# live-mode confirmation.

@@ -384,9 +384,17 @@ class DeploymentPipeline:
             out.extend(records)
         return out
 
-    def approve_pending(self, index, approver="human"):
+    def approve_pending(self, index=None, approver="human",
+                        approval_id=None):
         """Approve one queued decision and execute it exactly once.
 
+        Reference the entry EITHER by stable ``approval_id`` (preferred:
+        queue positions shift as later cycles queue more entries, so a
+        position captured by a UI in a previous cycle can alias a
+        different, older decision) OR by current ``index`` (legacy;
+        valid only against a freshly-read queue snapshot). Exactly one
+        of the two must be given; unknown ids fail loudly instead of
+        popping whatever happens to sit at a stale position.
         Single-ownership protocol (under the pipeline lock): the entry
         is popped first, so two concurrent approvers cannot both
         execute it. Outcomes:
@@ -405,6 +413,21 @@ class DeploymentPipeline:
         """
         with self._lock:
             pending = self.enforcement.pending_approvals
+            if approval_id is not None:
+                # Resolve the STABLE id to its CURRENT position: the
+                # queue persists across cycles, positions do not.
+                matches = [i for i, entry in enumerate(pending)
+                           if isinstance(entry, dict)
+                           and entry.get("approval_id") == approval_id]
+                if not matches:
+                    raise IndexError(
+                        f"no pending approval {approval_id!r} "
+                        f"({len(pending)} queued; stale id or already "
+                        f"handled -- refusing to pop by position)")
+                index = matches[0]
+            elif index is None:
+                raise IndexError(
+                    "approve_pending needs index= or approval_id=")
             if not (0 <= index < len(pending)):
                 raise IndexError(
                     f"no pending approval at index {index}")

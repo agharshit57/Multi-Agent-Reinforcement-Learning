@@ -15,4 +15,8 @@
     <ProjectReference Include="..\Core\CyberMarl.Deployment.Core.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <Resource Include="..\..\..\imgs\logo.png" Link="Assets\logo.png" />
+  </ItemGroup>
+
 </Project>

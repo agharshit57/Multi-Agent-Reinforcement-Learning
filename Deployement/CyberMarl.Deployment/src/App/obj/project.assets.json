@@ -1,0 +1,97 @@
+{
+  "version": 3,
+  "targets": {
+    "net8.0-windows7.0": {
+      "CyberMarl.Deployment.Core/1.0.0": {
+        "type": "project",
+        "framework": ".NETCoreApp,Version=v8.0",
+        "compile": {
+          "bin/placeholder/CyberMarl.Deployment.Core.dll": {}
+        },
+        "runtime": {
+          "bin/placeholder/CyberMarl.Deployment.Core.dll": {}
+        }
+      }
+    }
+  },
+  "libraries": {
+    "CyberMarl.Deployment.Core/1.0.0": {
+      "type": "project",
+      "path": "../Core/CyberMarl.Deployment.Core.csproj",
+      "msbuildProject": "../Core/CyberMarl.Deployment.Core.csproj"
+    }
+  },
+  "projectFileDependencyGroups": {
+    "net8.0-windows7.0": [
+      "CyberMarl.Deployment.Core >= 1.0.0"
+    ]
+  },
+  "packageFolders": {
+    "C:\\Users\\aniru\\.nuget\\packages\\": {}
+  },
+  "project": {
+    "version": "1.0.0",
+    "restore": {
+      "projectUniqueName": "C:\\cyber\\cage-challenge-4\\Deployement\\CyberMarl.Deployment\\src\\App\\CyberMarl.Deployment.App.csproj",
+      "projectName": "CyberMarl.Deployment.App",
+      "projectPath": "C:\\cyber\\cage-challenge-4\\Deployement\\CyberMarl.Deployment\\src\\App\\CyberMarl.Deployment.App.csproj",
+      "packagesPath": "C:\\Users\\aniru\\.nuget\\packages\\",
+      "outputPath": "C:\\cyber\\cage-challenge-4\\Deployement\\CyberMarl.Deployment\\src\\App\\obj\\",
+      "projectStyle": "PackageReference",
+      "configFilePaths": [
+        "C:\\Users\\aniru\\AppData\\Roaming\\NuGet\\NuGet.Config"
+      ],
+      "originalTargetFrameworks": [
+        "net8.0-windows"
+      ],
+      "sources": {
+        "https://api.nuget.org/v3/index.json": {}
+      },
+      "frameworks": {
+        "net8.0-windows7.0": {
+          "targetAlias": "net8.0-windows",
+          "projectReferences": {
+            "C:\\cyber\\cage-challenge-4\\Deployement\\CyberMarl.Deployment\\src\\Core\\CyberMarl.Deployment.Core.csproj": {
+              "projectPath": "C:\\cyber\\cage-challenge-4\\Deployement\\CyberMarl.Deployment\\src\\Core\\CyberMarl.Deployment.Core.csproj"
+            }
+          }
+        }
+      },
+      "warningProperties": {
+        "warnAsError": [
+          "NU1605"
+        ]
+      },
+      "restoreAuditProperties": {
+        "enableAudit": "true",
+        "auditLevel": "low",
+        "auditMode": "direct"
+      }
+    },
+    "frameworks": {
+      "net8.0-windows7.0": {
+        "targetAlias": "net8.0-windows",
+        "imports": [
+          "net461",
+          "net462",
+          "net47",
+          "net471",
+          "net472",
+          "net48",
+          "net481"
+        ],
+        "assetTargetFallback": true,
+        "warn": true,
+        "frameworkReferences": {
+          "Microsoft.NETCore.App": {
+            "privateAssets": "all"
+          },
+          "Microsoft.WindowsDesktop.App.WPF": {
+            "privateAssets": "none"
+          }
+        },
+        "runtimeIdentifierGraphPath": "C:\\Program Files\\dotnet\\sdk\\8.0.424/PortableRuntimeIdentifierGraph.json"
+      }
+    }
+  }
+}

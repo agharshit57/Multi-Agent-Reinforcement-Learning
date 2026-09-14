@@ -58,7 +58,13 @@ def _is_windows():
 
 
 def run_cmd(argv, timeout_s=15):
-    """Run an OS command, best-effort. Returns (stdout_text | None)."""
+    """Run an OS command, best-effort. Returns (stdout_text | None).
+
+    Fail-safe contract (matches network_inventory.py): ANY non-zero
+    exit means "unavailable source" (None), even when the tool still
+    printed something -- a failing command's partial stdout is not
+    legitimate telemetry and must never be parsed as if it were.
+    """
     try:
         proc = subprocess.run(
             argv, capture_output=True, timeout=timeout_s, check=False)
@@ -66,12 +72,8 @@ def run_cmd(argv, timeout_s=15):
         return None
     except (subprocess.SubprocessError, OSError):
         return None
-    if proc.returncode not in (0,):
-        # Some tools (sc, netstat) return 0 on success only; anything
-        # else is an unavailable source, never partial fiction. Note:
-        # tasklist returns 0 normally; non-zero means failure.
-        if proc.returncode != 0 and not proc.stdout:
-            return None
+    if proc.returncode != 0:
+        return None
     try:
         return proc.stdout.decode("utf-8", errors="replace")
     except Exception:

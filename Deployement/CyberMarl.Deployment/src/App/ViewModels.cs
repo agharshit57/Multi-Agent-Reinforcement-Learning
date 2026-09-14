@@ -70,7 +70,14 @@ public sealed class ActionRow : ViewModelBase
     public bool RequiresApproval { get; init; }
     public bool Blocked { get; init; }
     public string BlockReason { get; init; } = "";
-    public int? ApprovalIndex { get; set; }
+    /// <summary>
+    /// Stable server-side id (GET /approvals). Set ONLY on rows that
+    /// mirror the persistent server queue; per-cycle informational rows
+    /// (blocked refusals, safe/proposed plans) carry none and can never
+    /// be approved. Positions are never used: they shift across cycles.
+    /// </summary>
+    public string? ApprovalId { get; set; }
+    public bool IsServerApproval { get; set; }
 
     public string Status
     {
@@ -141,7 +148,15 @@ public sealed class MainViewModel : ViewModelBase
         RunCycleCommand = new RelayCommand(async _ => await RunCycleAsync(), () => _client is not null && !_busy);
         ApproveCommand = new RelayCommand(
             async row => await ApproveAsync((ActionRow?)row),
-            row => row is ActionRow { RequiresApproval: true, Blocked: false, Status: "queued" } && !_busy);
+            // Only server-queue rows with a stable id are approvable
+            // (never per-cycle positions). Failed attempts stay
+            // retryable: the entry is still queued server-side.
+            row => row is ActionRow
+            {
+                IsServerApproval: true, Blocked: false,
+                Status: "queued" or "approval-failed",
+            } && !string.IsNullOrEmpty(((ActionRow)row).ApprovalId)
+                && !_busy);
         RefreshLocalCommand = new RelayCommand(_ => RefreshLocalDiscovery(), () => !_busy);
         NavCommand = new RelayCommand(parameter =>
         {
@@ -372,9 +387,16 @@ public sealed class MainViewModel : ViewModelBase
             }
 
             Actions.Clear();
-            var queueIndex = 0;
+            int proposed = 0, refusals = 0;
             foreach (var plan in result.RealActions)
             {
+                // Approval-routed plans are represented by the server
+                // queue rows (SyncServerRowsAsync below), never by a
+                // positional per-cycle row: positions shift across
+                // cycles while the server queue persists.
+                if (plan.RequiresApproval && !plan.Blocked)
+                    continue;
+                if (plan.Blocked) refusals++; else proposed++;
                 var row = new ActionRow
                 {
                     Description = plan.Description,
@@ -383,10 +405,8 @@ public sealed class MainViewModel : ViewModelBase
                     RequiresApproval = plan.RequiresApproval,
                     Blocked = plan.Blocked,
                     BlockReason = plan.BlockReason,
-                    Status = plan.Blocked ? "blocked" : plan.RequiresApproval ? "queued" : "proposed",
+                    Status = plan.Blocked ? "blocked" : "proposed",
                 };
-                if (!plan.Blocked && plan.RequiresApproval)
-                    row.ApprovalIndex = queueIndex++;
                 Actions.Add(row);
                 Record(plan.Blocked ? "blocked" : "decided",
                     plan.Operation,
@@ -394,11 +414,12 @@ public sealed class MainViewModel : ViewModelBase
                     plan.Description);
             }
             _cycleOk = true;
+            await SyncServerRowsAsync();
             RefreshPending();
 
             Banner = PendingCount > 0
                 ? $"Cycle done ({SelectedMode}). {PendingCount} action(s) need your approval — open the Actions page."
-                : $"Cycle done ({SelectedMode}). No approvals needed. {MappingSummary}.";
+                : $"Cycle done ({SelectedMode}). {proposed} proposed, {refusals} refused, none queued. {MappingSummary}.";
         }
         catch (Exception ex)
         {
@@ -414,7 +435,7 @@ public sealed class MainViewModel : ViewModelBase
 
     private async Task ApproveAsync(ActionRow? row)
     {
-        if (_client is null || row?.ApprovalIndex is null) return;
+        if (_client is null || string.IsNullOrEmpty(row?.ApprovalId)) return;
         if (SelectedMode == "Live")
         {
             bool confirmed = await (ConfirmAction?.Invoke(
@@ -430,13 +451,14 @@ public sealed class MainViewModel : ViewModelBase
         SetBusy(true);
         try
         {
-            var outcome = await _client.ApproveAsync(row.ApprovalIndex.Value, Environment.UserName);
+            var outcome = await _client.ApproveAsync(row.ApprovalId, Environment.UserName);
             row.Status = outcome.Applied ? "approved" : "approval-failed";
             Record(outcome.Applied ? "approved" : "failed",
                 row.Operation, "approval", outcome.Applied ? outcome.Details : outcome.Error);
             Banner = outcome.Applied
                 ? $"Approved and applied: {row.Description}."
                 : $"Approval recorded but not applied: {outcome.Error}";
+            await SyncServerRowsAsync();
             RefreshPending();
         }
         catch (Exception ex)
@@ -452,6 +474,66 @@ public sealed class MainViewModel : ViewModelBase
         }
     }
 
+    /// <summary>
+    /// Reconcile the Actions list with the persistent server queue.
+    /// Queued server rows always mirror GET /approvals (stable ids);
+    /// rows the server no longer holds are dropped ONLY once decided
+    /// here (approved/failed history stays visible). Nothing is ever
+    /// addressed by list position.
+    /// </summary>
+    private async Task SyncServerRowsAsync()
+    {
+        if (_client is null) return;
+        List<ApprovalDto> fresh;
+        try
+        {
+            fresh = await _client.GetApprovalsAsync();
+        }
+        catch (Exception ex)
+        {
+            Record("failed", "approvals", "sidecar", ex.Message);
+            return;
+        }
+        for (int i = Actions.Count - 1; i >= 0; i--)
+            if (Actions[i].IsServerApproval && Actions[i].Status == "queued")
+                Actions.RemoveAt(i);
+        var knownIds = new HashSet<string>(Actions
+            .Where(a => a.IsServerApproval && !string.IsNullOrEmpty(a.ApprovalId))
+            .Select(a => a.ApprovalId!));
+        foreach (var entry in fresh)
+        {
+            var row = BuildServerRow(entry);
+            Actions.Add(row);
+            if (!string.IsNullOrEmpty(row.ApprovalId) && !knownIds.Contains(row.ApprovalId))
+                Record("queued", row.Operation,
+                    string.IsNullOrEmpty(entry.Asset) ? entry.Target : entry.Asset,
+                    row.Description);
+        }
+    }
+
+    private static ActionRow BuildServerRow(ApprovalDto entry)
+    {
+        var target = string.IsNullOrEmpty(entry.Asset) || entry.Asset == entry.Target
+            ? entry.Target
+            : $"{entry.Target} ({entry.Asset})";
+        var description = $"{entry.Operation} on {target}";
+        if (entry.Attempts > 0)
+            description += $" [attempt {entry.Attempts + 1}]";
+        if (string.IsNullOrEmpty(entry.ApprovalId))
+            description += " [no stable id — cannot approve from here]";
+        return new ActionRow
+        {
+            Description = description,
+            Operation = entry.Operation,
+            Risk = entry.Risk == "?" ? "unknown" : entry.Risk,
+            RequiresApproval = true,
+            Blocked = false,
+            Status = "queued",
+            ApprovalId = entry.ApprovalId,
+            IsServerApproval = true,
+        };
+    }
+
     private void OnActionsChanged(object? sender, NotifyCollectionChangedEventArgs e)
     {
         if (e.NewItems is not null)
@@ -462,7 +544,12 @@ public sealed class MainViewModel : ViewModelBase
 
     private void RefreshPending()
     {
-        PendingCount = Actions.Count(a => a.Status == "queued");
+        // Queued + failed-but-still-server-side rows both need the
+        // operator (a failed attempt re-queues server-side and stays
+        // retryable by its stable id).
+        PendingCount = Actions.Count(a => a.Status == "queued"
+                                          || (a.Status == "approval-failed"
+                                              && a.IsServerApproval));
         Raise(nameof(ActionsNavLabel));
         Raise(nameof(PendingCard));
     }

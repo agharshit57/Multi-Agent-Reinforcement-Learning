@@ -174,11 +174,25 @@ def _translate_zone(entry, operation, risk, requires_approval,
 
 
 def is_phantom_asset(asset):
-    """True for unpopulated placeholder identities (never real)."""
-    hostname = str((asset or {}).get("hostname", ""))
-    ip = str((asset or {}).get("ip", ""))
-    return (hostname.startswith(UNPOPULATED_HOSTNAME_PREFIX)
-            or ip.startswith(UNPOPULATED_IP_PREFIX))
+    """True for unpopulated placeholder identities (never real).
+
+    Accepts BOTH shapes the live path produces: the asset dict
+    (``{"ip", "hostname"}``) AND the collapsed string identity that
+    ``LiveExecutor._real_asset`` hands to backends (an ip, a hostname,
+    or a CC4 slot name). A previous version inspected dicts only, so
+    the guard silently never fired on the real string path -- this
+    accepts both, and anything else is not phantom.
+    """
+    if isinstance(asset, str):
+        text = asset.strip()
+        return (text.startswith(UNPOPULATED_IP_PREFIX)
+                or text.startswith(UNPOPULATED_HOSTNAME_PREFIX))
+    if isinstance(asset, dict):
+        hostname = str(asset.get("hostname", "") or "")
+        ip = str(asset.get("ip", "") or "")
+        return (hostname.startswith(UNPOPULATED_HOSTNAME_PREFIX)
+                or ip.startswith(UNPOPULATED_IP_PREFIX))
+    return False
 
 
 class PhantomGuardBackend(EnforcementBackend):
@@ -208,7 +222,10 @@ class PhantomGuardBackend(EnforcementBackend):
 
     @staticmethod
     def _guard(asset):
-        if is_phantom_asset(asset if isinstance(asset, dict) else {}):
+        # Pass the identity through UNCHANGED: backends receive the
+        # collapsed string from LiveExecutor._real_asset, and a dict
+        # coercion here is exactly what used to blind the guard.
+        if is_phantom_asset(asset):
             raise BackendError(
                 f"refusing phantom target {asset!r}: policy slot has "
                 f"no physical asset (unpopulated padding)")

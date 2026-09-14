@@ -23,4 +23,8 @@
     <Compile Include="..\App\ViewModels.cs" Link="Shared\ViewModels.cs" />
   </ItemGroup>
 
+  <ItemGroup>
+    <AvaloniaResource Include="..\..\..\imgs\logo.png" Link="Assets\logo.png" />
+  </ItemGroup>
+
 </Project>

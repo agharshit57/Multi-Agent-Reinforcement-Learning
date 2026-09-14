@@ -173,8 +173,16 @@ class RealWorldPipeline:
         return out_records, out_plans
 
     # ------------------------------------------------------ delegation --
-    def approve_pending(self, approval_id, approver="human"):
-        return self.inner.approve_pending(approval_id, approver=approver)
+    def approve_pending(self, index=None, approver="human",
+                        approval_id=None):
+        # NOTE: the old signature named its positional parameter
+        # ``approval_id`` but forwarded it as a queue POSITION (the
+        # exact aliasing hazard fixed server-side). It now mirrors
+        # DeploymentPipeline: stable approval_id= preferred, index=
+        # legacy. Old positional calls approve_pending(0) still mean
+        # "current position 0" and behave exactly as before.
+        return self.inner.approve_pending(
+            index=index, approver=approver, approval_id=approval_id)
 
     def set_mode(self, mode):
         self.inner.set_mode(mode)

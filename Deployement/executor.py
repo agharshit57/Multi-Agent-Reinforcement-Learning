@@ -16,8 +16,24 @@ mode behaves like a closed loop:
 """
 
 from dataclasses import dataclass, field
+import uuid
 
 from .config import OP_TIMEOUT_S, DEFAULT_OP_TIMEOUT_S
+
+
+def stamp_approval_id(decision):
+    """Stable identity for one queued approval (position-independent).
+
+    The server-side queue persists across cycles while UI list positions
+    do not: approving by queue POSITION can pop the wrong decision after
+    another cycle queues more entries. Every queued entry therefore
+    carries an ``approval_id`` minted once here (preserved across
+    approve/re-queue retries via setdefault) that approval calls must
+    reference instead of positions.
+    """
+    entry = dict(decision)
+    entry.setdefault("approval_id", uuid.uuid4().hex[:12])
+    return entry
 
 
 @dataclass
@@ -254,13 +270,16 @@ class SupervisedExecutor(MockExecutor):
 
     def execute(self, decision):
         if decision.get("needs_approval") and not decision.get("approved"):
-            self.state.pending_approvals.append(dict(decision))
+            entry = stamp_approval_id(decision)
+            self.state.pending_approvals.append(entry)
             self.state.log.append(("queued", decision["operation"],
                                    str(decision.get("target"))))
             self.state.audit_record({"event": "queued",
                                      "operation": decision["operation"],
                                      "target": str(decision.get("target")),
-                                     "mode": "supervised", "applied": False})
+                                     "approval_id": entry["approval_id"],
+                                     "mode": "supervised",
+                                     "applied": False})
             return ExecutionResult(operation=decision["operation"],
                                    target=str(decision.get("target")),
                                    mode="supervised", applied=False,
@@ -478,13 +497,15 @@ class LiveExecutor(BaseExecutor):
     def execute(self, decision):
         asset = self._real_asset(decision)
         if decision.get("needs_approval") and not decision.get("approved"):
-            self.state.pending_approvals.append(dict(decision))
+            entry = stamp_approval_id(decision)
+            self.state.pending_approvals.append(entry)
             self.state.log.append(("queued", decision["operation"],
                                    str(decision.get("target"))))
             self.state.audit_record({"event": "queued",
                                      "operation": decision["operation"],
                                      "target": str(decision.get("target")),
                                      "asset": asset,
+                                     "approval_id": entry["approval_id"],
                                      "mode": "live", "applied": False})
             return ExecutionResult(operation=decision["operation"],
                                    target=str(decision.get("target")),

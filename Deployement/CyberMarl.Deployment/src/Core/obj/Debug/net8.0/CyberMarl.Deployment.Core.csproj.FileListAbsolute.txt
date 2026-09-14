@@ -1,0 +1,12 @@
+C:\cyber\cage-challenge-4\Deployement\CyberMarl.Deployment\src\Core\bin\Debug\net8.0\CyberMarl.Deployment.Core.deps.json
+C:\cyber\cage-challenge-4\Deployement\CyberMarl.Deployment\src\Core\bin\Debug\net8.0\CyberMarl.Deployment.Core.dll
+C:\cyber\cage-challenge-4\Deployement\CyberMarl.Deployment\src\Core\bin\Debug\net8.0\CyberMarl.Deployment.Core.pdb
+C:\cyber\cage-challenge-4\Deployement\CyberMarl.Deployment\src\Core\obj\Debug\net8.0\CyberMarl.Deployment.Core.GeneratedMSBuildEditorConfig.editorconfig
+C:\cyber\cage-challenge-4\Deployement\CyberMarl.Deployment\src\Core\obj\Debug\net8.0\CyberMarl.Deployment.Core.AssemblyInfoInputs.cache
+C:\cyber\cage-challenge-4\Deployement\CyberMarl.Deployment\src\Core\obj\Debug\net8.0\CyberMarl.Deployment.Core.AssemblyInfo.cs
+C:\cyber\cage-challenge-4\Deployement\CyberMarl.Deployment\src\Core\obj\Debug\net8.0\CyberMarl.Deployment.Core.csproj.CoreCompileInputs.cache
+C:\cyber\cage-challenge-4\Deployement\CyberMarl.Deployment\src\Core\obj\Debug\net8.0\CyberMarl.Deployment.Core.sourcelink.json
+C:\cyber\cage-challenge-4\Deployement\CyberMarl.Deployment\src\Core\obj\Debug\net8.0\CyberMarl.Deployment.Core.dll
+C:\cyber\cage-challenge-4\Deployement\CyberMarl.Deployment\src\Core\obj\Debug\net8.0\refint\CyberMarl.Deployment.Core.dll
+C:\cyber\cage-challenge-4\Deployement\CyberMarl.Deployment\src\Core\obj\Debug\net8.0\CyberMarl.Deployment.Core.pdb
+C:\cyber\cage-challenge-4\Deployement\CyberMarl.Deployment\src\Core\obj\Debug\net8.0\ref\CyberMarl.Deployment.Core.dll

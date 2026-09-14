@@ -127,6 +127,17 @@ public sealed record ApprovalOutcome(
     string Error,
     string Details);
 
+/// <summary>One server-side queued approval (stable id, not a position).</summary>
+public sealed record ApprovalDto(
+    [property: JsonPropertyName("position")] int Position,
+    [property: JsonPropertyName("approval_id")] string? ApprovalId,
+    [property: JsonPropertyName("operation")] string Operation,
+    [property: JsonPropertyName("command")] string Command,
+    [property: JsonPropertyName("target")] string Target,
+    [property: JsonPropertyName("asset")] string Asset,
+    [property: JsonPropertyName("risk")] string Risk,
+    [property: JsonPropertyName("attempts")] int Attempts);
+
 // ---------------------------------------------------------- client --
 
 /// <summary>HTTP client for the Python inference sidecar (loopback).</summary>
@@ -169,8 +180,16 @@ public sealed class InferenceClient : IDisposable
     public async Task<CycleResult> RunCycleAsync(
         RealTopologyDto topology, RealBatchDto batch, CancellationToken ct = default)
     {
-        var payload = new { topology, batch };
-        using var response = await _http.PostAsJsonAsync("/cycle", payload, ct);
+        // StringContent (not PostAsJsonAsync): JsonContent streams with
+        // chunked transfer encoding (no Content-Length), which stock
+        // HTTP servers such as Python's http.server cannot parse --
+        // the sidecar answers those with 400. Byte-backed content
+        // always carries an explicit Content-Length.
+        var json = System.Text.Json.JsonSerializer.Serialize(
+            new { topology, batch });
+        using var content = new StringContent(
+            json, System.Text.Encoding.UTF8, "application/json");
+        using var response = await _http.PostAsync("/cycle", content, ct);
         var doc = await ReadAsync<JsonCycleResponse>(response);
         return new CycleResult(doc.Mapping, doc.Records, doc.RealActions,
             doc.RealTopology ?? new RealTopologyDto(
@@ -178,16 +197,36 @@ public sealed class InferenceClient : IDisposable
     }
 
     /// <summary>
-    /// Approve one queued supervised/live decision exactly once
-    /// (server-side single-ownership queue).
+    /// Approve one queued decision by STABLE id (never by position:
+    /// the server queue persists across cycles while list positions
+    /// shift, so position-based approval can pop the wrong decision).
     /// </summary>
     public async Task<ApprovalOutcome> ApproveAsync(
-        int index, string approver, CancellationToken ct = default)
+        string approvalId, string approver, CancellationToken ct = default)
     {
-        var payload = new { index, approver };
-        using var response = await _http.PostAsJsonAsync("/approve", payload, ct);
+        if (string.IsNullOrEmpty(approvalId))
+            throw new InferenceException(
+                "refusing approval without a stable approval_id " +
+                "(position-based approval can pop the wrong decision)");
+        // StringContent for the same Content-Length reason as /cycle.
+        var json = System.Text.Json.JsonSerializer.Serialize(
+            new { approval_id = approvalId, approver });
+        using var content = new StringContent(
+            json, System.Text.Encoding.UTF8, "application/json");
+        using var response = await _http.PostAsync("/approve", content, ct);
         var doc = await ReadAsync<JsonApproveResponse>(response);
         return new ApprovalOutcome(doc.Operation, doc.Applied, doc.Error, doc.Details);
+    }
+
+    /// <summary>
+    /// Full pending-approvals snapshot (stable ids). The UI renders
+    /// THIS list -- never a per-cycle positional list.
+    /// </summary>
+    public async Task<List<ApprovalDto>> GetApprovalsAsync(
+        CancellationToken ct = default)
+    {
+        var doc = await GetAsync<JsonApprovalsResponse>("/approvals", ct);
+        return doc.Approvals ?? new List<ApprovalDto>();
     }
 
     private async Task<T> GetAsync<T>(string path, CancellationToken ct)
@@ -243,6 +282,9 @@ public sealed class InferenceClient : IDisposable
         [property: JsonPropertyName("applied")] bool Applied,
         [property: JsonPropertyName("error")] string Error,
         [property: JsonPropertyName("details")] string Details);
+
+    private sealed record JsonApprovalsResponse(
+        [property: JsonPropertyName("approvals")] List<ApprovalDto>? Approvals);
 
     // ------------------------------------------------- DTO mapping --
     public static RealTopology ToModel(RealTopologyDto dto) =>

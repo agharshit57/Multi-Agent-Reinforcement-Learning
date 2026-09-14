@@ -15,8 +15,51 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
+        // Logo URIs probed in order: the linked resource name depends on
+        // build-time Link handling, so never assume exactly one shape.
+        // A missing logo hides the image; the app never depends on it.
+        var logoUri = FindLogoUri();
+        var logoImage = this.FindControl<Image>("LogoImage");
+        if (logoImage is not null)
+        {
+            try
+            {
+                if (logoUri is not null)
+                    logoImage.Source = new Avalonia.Media.Imaging.Bitmap(
+                        Avalonia.Platform.AssetLoader.Open(logoUri));
+                else
+                    logoImage.IsVisible = false;
+            }
+            catch { logoImage.IsVisible = false; }
+        }
+        try
+        {
+            if (logoUri is not null)
+                Icon = new WindowIcon(
+                    Avalonia.Platform.AssetLoader.Open(logoUri));
+        }
+        catch { /* window/taskbar icon is decoration, never fatal */ }
         ViewModel.ConfirmAction = ConfirmAsync;
         DataContext = ViewModel;
+    }
+
+    private static Uri? FindLogoUri()
+    {
+        foreach (var path in new[]
+                 {
+                     "avares://CyberMarl.Deployment.AvaloniaApp/Assets/logo.png",
+                     "avares://CyberMarl.Deployment.AvaloniaApp/logo.png",
+                 })
+        {
+            try
+            {
+                var uri = new Uri(path);
+                if (Avalonia.Platform.AssetLoader.Exists(uri))
+                    return uri;
+            }
+            catch { /* try the next shape */ }
+        }
+        return null;
     }
 
     private async Task<bool> ConfirmAsync(string title, string message)

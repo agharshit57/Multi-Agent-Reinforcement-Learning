@@ -1,0 +1,39 @@
+{
+  "runtimeTarget": {
+    "name": ".NETCoreApp,Version=v8.0",
+    "signature": ""
+  },
+  "compilationOptions": {},
+  "targets": {
+    ".NETCoreApp,Version=v8.0": {
+      "CyberMarl.Deployment.App/1.0.0": {
+        "dependencies": {
+          "CyberMarl.Deployment.Core": "1.0.0"
+        },
+        "runtime": {
+          "CyberMarl.Deployment.App.dll": {}
+        }
+      },
+      "CyberMarl.Deployment.Core/1.0.0": {
+        "runtime": {
+          "CyberMarl.Deployment.Core.dll": {
+            "assemblyVersion": "1.0.0",
+            "fileVersion": "1.0.0.0"
+          }
+        }
+      }
+    }
+  },
+  "libraries": {
+    "CyberMarl.Deployment.App/1.0.0": {
+      "type": "project",
+      "serviceable": false,
+      "sha512": ""
+    },
+    "CyberMarl.Deployment.Core/1.0.0": {
+      "type": "project",
+      "serviceable": false,
+      "sha512": ""
+    }
+  }
+}

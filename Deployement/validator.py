@@ -22,7 +22,7 @@ Translation table (CC4 command -> real defensive operation):
   Analyse <host>      -> collect_forensics     (read-only)
   DeployDecoy <host>  -> deploy_honeypot       (needs approval*)
   Remove <host>       -> terminate_suspicious  (needs approval*)
-  Restore <host>      -> reimage_host          (needs approval*)
+  Restore <host>      -> reimage_host          (needs approval*)w
   AllowTrafficZone    -> allow_zone_traffic    (restorative, safe)
   BlockTrafficZone    -> isolate_zone_traffic  (needs approval*)
 

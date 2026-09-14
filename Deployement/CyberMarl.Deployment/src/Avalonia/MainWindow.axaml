@@ -2,10 +2,10 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         x:Class="CyberMarl.Deployment.AvaloniaApp.MainWindow"
         Title="Cyber MARL — Real-World SOC Console"
-        Width="1140" Height="740" Background="#0B0F14">
-  <DockPanel Background="#0B0F14">
+        Width="1140" Height="740" Background="#0A0A0B">
+  <DockPanel Background="#0A0A0B">
     <!-- Status bar (Avalonia has no StatusBar control): connection truth. -->
-    <Border DockPanel.Dock="Bottom" Background="#121924" Padding="10,6">
+    <Border DockPanel.Dock="Bottom" Background="#141417" Padding="10,6">
       <StackPanel Orientation="Horizontal" Spacing="8">
         <TextBlock Text="{Binding Health}" />
         <TextBlock Text="|" Classes="muted" />
@@ -15,7 +15,10 @@
 
     <DockPanel Margin="14,10">
       <StackPanel DockPanel.Dock="Top" Spacing="4" Margin="0,0,0,8">
-        <TextBlock Text="{Binding PageTitle}" Classes="title" />
+        <StackPanel Orientation="Horizontal" Spacing="10">
+          <Image Name="LogoImage" Width="38" Height="38" VerticalAlignment="Center" />
+          <TextBlock Text="{Binding PageTitle}" Classes="title" VerticalAlignment="Center" />
+        </StackPanel>
         <TextBlock Text="{Binding Banner}" Classes="muted" TextWrapping="Wrap" />
         <StackPanel Orientation="Horizontal" Spacing="4">
           <Button Content="Connect" Command="{Binding ConnectCommand}" Classes="primary" />
